@@ -2,6 +2,9 @@ package ru.mpei.assistant.data.network
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -9,19 +12,71 @@ import ru.mpei.assistant.data.local.SessionStorage
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class BarsWebClient(private val sessionStorage: SessionStorage) {
+class BarsWebClient(
+    private val sessionStorage: SessionStorage,
+    val allowedHost: String = BARS_HOST
+) {
+
+    private val barsCookieJar = object : CookieJar {
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            if (!url.isHttps || !url.host.equals(allowedHost, ignoreCase = true)) return
+            if (cookies.isEmpty()) return
+            val currentMap = parseCookies(sessionStorage.barsCookies, allowedHost)
+                .associate { it.name to it.value }
+                .toMutableMap()
+            for (c in cookies) {
+                currentMap[c.name] = c.value
+            }
+            sessionStorage.barsCookies = currentMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            // Строго запрещаем отправку cookie БАРС для любых сторонних доменов или незащищённых протоколов
+            if (!url.isHttps || !url.host.equals(allowedHost, ignoreCase = true)) {
+                return emptyList()
+            }
+            return parseCookies(sessionStorage.barsCookies, allowedHost)
+        }
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
+        .cookieJar(barsCookieJar)
         .followRedirects(true)
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val url = request.url
+            if (!url.isHttps || !url.host.equals(allowedHost, ignoreCase = true)) {
+                throw SecurityException("Заблокирован сетевой запрос к стороннему/незащищённому хосту: ${url.host}")
+            }
+            val response = chain.proceed(request)
+            if (response.isRedirect) {
+                val location = response.header("Location")
+                if (!location.isNullOrBlank()) {
+                    val redirectUrl = location.toHttpUrlOrNull() ?: request.url.resolve(location)
+                    if (redirectUrl == null || !redirectUrl.isHttps || !redirectUrl.host.equals(allowedHost, ignoreCase = true)) {
+                        throw SecurityException("Заблокирован междоменный HTTP-редирект с $allowedHost на $location")
+                    }
+                }
+            }
+            response
+        }
+        .addNetworkInterceptor { chain ->
+            val req = chain.request()
+            // Проверка каждого сетевого hop'а (включая автоматические редиректы)
+            if (!req.url.isHttps || !req.url.host.equals(allowedHost, ignoreCase = true)) {
+                throw SecurityException("Заблокирован междоменный сетевой hop к: ${req.url.host}")
+            }
+            chain.proceed(req)
+        }
         .build()
 
     suspend fun fetchHtml(url: String = BARS_BASE_URL): Result<String> = withContext(Dispatchers.IO) {
         val parsedUri = url.toHttpUrlOrNull()
-        if (parsedUri == null || !parsedUri.isHttps || !parsedUri.host.equals("bars.mpei.ru", ignoreCase = true)) {
+        if (parsedUri == null || !parsedUri.isHttps || !parsedUri.host.equals(allowedHost, ignoreCase = true)) {
             ru.mpei.assistant.util.AppLogger.e("BARS_WEB", "fetchHtml BLOCKED insecure/external url: $url")
-            return@withContext Result.failure(SecurityException("Запрос отклонён: разрешены исключительно защищённые HTTPS-запросы к bars.mpei.ru"))
+            return@withContext Result.failure(SecurityException("Запрос отклонён: разрешены исключительно защищённые HTTPS-запросы к $allowedHost"))
         }
 
         val cookies = sessionStorage.barsCookies
@@ -32,9 +87,9 @@ class BarsWebClient(private val sessionStorage: SessionStorage) {
 
         ru.mpei.assistant.util.AppLogger.i("BARS_WEB", "fetchHtml: requesting $url (cookies len=${cookies.length})")
 
+        // Cookie передаётся исключительно через CookieJar со строгой доменной изоляцией
         val request = Request.Builder()
             .url(url)
-            .addHeader("Cookie", cookies)
             .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
             .addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .build()
@@ -67,7 +122,37 @@ class BarsWebClient(private val sessionStorage: SessionStorage) {
     fun isAuthorized(): Boolean = !sessionStorage.barsCookies.isNullOrBlank()
 
     companion object {
-        const val BARS_BASE_URL = "https://bars.mpei.ru/bars_web/"
+        const val BARS_HOST = "bars.mpei.ru"
+        const val BARS_BASE_URL = "https://$BARS_HOST/bars_web/"
+
+        /**
+         * Парсит строку cookies ("k1=v1; k2=v2") в структурированные Cookie объекты OkHttp с доменной привязкой.
+         */
+        fun parseCookies(raw: String?, host: String): List<Cookie> {
+            if (raw.isNullOrBlank()) return emptyList()
+            return raw.split(";").mapNotNull { part ->
+                val trimmed = part.trim()
+                val eq = trimmed.indexOf('=')
+                if (eq > 0) {
+                    val name = trimmed.substring(0, eq).trim()
+                    val value = trimmed.substring(eq + 1).trim()
+                    if (name.isNotEmpty()) {
+                        try {
+                            Cookie.Builder()
+                                .name(name)
+                                .value(value)
+                                .domain(host)
+                                .path("/")
+                                .secure()
+                                .httpOnly()
+                                .build()
+                        } catch (_: Exception) {
+                            null
+                        }
+                    } else null
+                } else null
+            }
+        }
 
         /**
          * Извлекает UUID студента (studentID) из переданного HTML или ссылки.
@@ -112,6 +197,10 @@ class BarsWebClient(private val sessionStorage: SessionStorage) {
             val id = extractStudentIdFromHtml(html)
             if (!id.isNullOrBlank()) {
                 ru.mpei.assistant.util.AppLogger.i("BARS_WEB", "resolveStudentId: found studentId=$id from ListStudent")
+                val oldId = sessionStorage.barsStudentId
+                if (!oldId.isNullOrBlank() && oldId != id) {
+                    ru.mpei.assistant.util.AppLogger.w("BARS_WEB", "Detected studentId change: $oldId -> $id")
+                }
                 sessionStorage.barsStudentId = id
                 if (sessionStorage.barsStudentUrl.isNullOrBlank()) {
                     sessionStorage.barsStudentUrl = "https://bars.mpei.ru/bars_web/ST_Study/Main/Main?studentID=$id"
@@ -128,6 +217,10 @@ class BarsWebClient(private val sessionStorage: SessionStorage) {
             val id = extractStudentIdFromHtml(html)
             if (!id.isNullOrBlank()) {
                 ru.mpei.assistant.util.AppLogger.i("BARS_WEB", "resolveStudentId: found studentId=$id from base URL")
+                val oldId = sessionStorage.barsStudentId
+                if (!oldId.isNullOrBlank() && oldId != id) {
+                    ru.mpei.assistant.util.AppLogger.w("BARS_WEB", "Detected studentId change: $oldId -> $id")
+                }
                 sessionStorage.barsStudentId = id
                 if (sessionStorage.barsStudentUrl.isNullOrBlank()) {
                     sessionStorage.barsStudentUrl = "https://bars.mpei.ru/bars_web/ST_Study/Main/Main?studentID=$id"

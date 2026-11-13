@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
         val barsRepository = BarsRepository(
             barsWebClient = barsClient,
             barsDao = database.barsDao(),
+            absenceDao = database.absenceDao(),
             sessionStorage = sessionStorage
         )
 
@@ -77,7 +78,8 @@ class MainActivity : ComponentActivity() {
 
         val emailRepository = EmailRepository(
             emailDao = database.emailDao(),
-            sessionStorage = sessionStorage
+            sessionStorage = sessionStorage,
+            appContext = applicationContext
         )
 
         val updateRepository = UpdateRepository(

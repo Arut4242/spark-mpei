@@ -602,13 +602,13 @@ fun EmailScreen(
         AlertDialog(
             onDismissRequest = { showLogoutDialog = false },
             title = { Text("Выход из почты ОСЭП") },
-            text = { Text("Вы действительно хотите выйти? Кэшированные письма и учетные данные будут удалены с устройства.") },
+            text = { Text("Вы действительно хотите выйти? Кэшированные письма, скачанные вложения и учетные данные будут удалены с устройства.") },
             confirmButton = {
                 TextButton(
                     onClick = {
                         showLogoutDialog = false
                         scope.launch {
-                            emailRepository.logout()
+                            emailRepository.logout(context)
                             isAuthorized = false
                         }
                     }
@@ -1465,7 +1465,7 @@ fun EmailLoginCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Данные хранятся только на устройстве в защищенном хранилище Android Keystore.",
+                text = "Данные хранятся только на устройстве в защищенном хранилище Android Keystore. Входя, вы соглашаетесь с Политикой конфиденциальности.",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp)

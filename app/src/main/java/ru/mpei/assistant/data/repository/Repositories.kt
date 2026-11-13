@@ -2,8 +2,12 @@ package ru.mpei.assistant.data.repository
 
 import android.content.Context
 import android.util.Log
+import android.webkit.CookieManager
 import androidx.compose.runtime.Stable
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 import java.io.File
@@ -20,6 +24,7 @@ import ru.mpei.assistant.data.network.BarsWebClient
 import ru.mpei.assistant.data.network.MpeiScheduleApi
 import ru.mpei.assistant.data.parser.BarsAttendanceParser
 import ru.mpei.assistant.data.parser.BarsHtmlParser
+import ru.mpei.assistant.security.KeystoreCrypto
 import ru.mpei.assistant.worker.NotificationHelper
 import ru.mpei.assistant.worker.buildAbsenceNotification
 import java.text.SimpleDateFormat
@@ -30,9 +35,30 @@ import java.util.Locale
 class BarsRepository(
     private val barsWebClient: BarsWebClient,
     private val barsDao: BarsDao,
+    private val absenceDao: AbsenceDao? = null,
     private val sessionStorage: SessionStorage
 ) {
-    fun getSubjectsFlow(): Flow<List<BarsSubject>> = barsDao.getAllSubjects()
+    /**
+     * Шифрует чувствительные поля предмета (контрольные недели, точки контроля) перед сохранением в SQLite
+     */
+    private fun encryptSubject(subject: BarsSubject): BarsSubject {
+        val encMeasures = if (subject.controlMeasuresJson.isNotEmpty() && subject.controlMeasuresJson != "[]") {
+            KeystoreCrypto.encrypt(subject.controlMeasuresJson) ?: subject.controlMeasuresJson
+        } else subject.controlMeasuresJson
+        return subject.copy(controlMeasuresJson = encMeasures)
+    }
+
+    /**
+     * Расшифровывает контрольные точки при чтении из Room
+     */
+    private fun decryptSubject(subject: BarsSubject): BarsSubject {
+        val decMeasures = KeystoreCrypto.decrypt(subject.controlMeasuresJson) ?: subject.controlMeasuresJson
+        return subject.copy(controlMeasuresJson = decMeasures)
+    }
+
+    fun getSubjectsFlow(): Flow<List<BarsSubject>> = barsDao.getAllSubjects().map { list ->
+        list.map { decryptSubject(it) }
+    }
 
     suspend fun refreshGrades(semesterId: String? = null): Result<List<BarsSubject>> {
         ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "refreshGrades started (semesterId=$semesterId)")
@@ -51,8 +77,8 @@ class BarsRepository(
 
         if (subjects.isNotEmpty()) {
             barsDao.clearAll()
-            barsDao.insertAll(subjects)
-            ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "Saved ${subjects.size} subjects to database")
+            barsDao.insertAll(subjects.map { encryptSubject(it) })
+            ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "Saved ${subjects.size} encrypted subjects to database")
         } else {
             ru.mpei.assistant.util.AppLogger.w("BARS_REPO", "Parsed 0 subjects from HTML")
         }
@@ -62,8 +88,69 @@ class BarsRepository(
 
     fun isAuthorized(): Boolean = !sessionStorage.barsCookies.isNullOrBlank()
 
-    fun logout() {
+    /**
+     * Обработка успешного входа:
+     * При смене студенческого аккаунта очищает данные предыдущего профиля до загрузки нового (F-04).
+     */
+    suspend fun onNewLogin(cookies: String, studentUrl: String?) {
+        val previousId = sessionStorage.barsStudentId
+        val extractedId = studentUrl?.let { url ->
+            Regex("""studentID=([a-fA-F0-9\-]{36})""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.getOrNull(1)
+        }
+        if (!extractedId.isNullOrBlank() && !previousId.isNullOrBlank() && extractedId != previousId) {
+            ru.mpei.assistant.util.AppLogger.w("BARS_REPO", "Student profile switched ($previousId -> $extractedId). Purging old academic cache.")
+            try {
+                barsDao.clearAll()
+                absenceDao?.clearAll()
+            } catch (e: Exception) {
+                ru.mpei.assistant.util.AppLogger.e("BARS_REPO", "Failed to clear old profile cache", e)
+            }
+        }
+        sessionStorage.barsCookies = cookies
+        if (!extractedId.isNullOrBlank()) {
+            sessionStorage.barsStudentId = extractedId
+            sessionStorage.barsStudentUrl = "https://bars.mpei.ru/bars_web/ST_Study/Main/Main?studentID=$extractedId"
+        } else if (!studentUrl.isNullOrBlank() && studentUrl.contains("ST_Study/Main/Main")) {
+            sessionStorage.barsStudentUrl = studentUrl
+        }
+    }
+
+    /**
+     * Безопасный выход из БАРС (F-04):
+     * 1. Запрос серверного эндпоинта LogOff для инвалидации сессии на сервере.
+     * 2. Очистка учётных данных и токенов в защищённом хранилище.
+     * 3. Полная очистка локального академического кэша (оценки и пропуски) в Room.
+     * 4. Удаление сессионных cookie из WebView с ожиданием callback и flush.
+     */
+    suspend fun logout() {
+        ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "logout initiated")
+        try {
+            barsWebClient.fetchHtml("https://bars.mpei.ru/bars_web/Account/LogOff")
+        } catch (e: Exception) {
+            ru.mpei.assistant.util.AppLogger.w("BARS_REPO", "Server logout endpoint request ignored/failed: ${e.message}")
+        }
+
         sessionStorage.clearSession()
+
+        try {
+            barsDao.clearAll()
+            absenceDao?.clearAll()
+            ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "Academic cache (barsDao, absenceDao) cleared")
+        } catch (e: Exception) {
+            ru.mpei.assistant.util.AppLogger.e("BARS_REPO", "Failed to clear academic cache", e)
+        }
+
+        try {
+            withContext(Dispatchers.Main) {
+                val cookieManager = CookieManager.getInstance()
+                cookieManager.removeAllCookies {
+                    cookieManager.flush()
+                    ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "WebView cookies successfully removed and flushed")
+                }
+            }
+        } catch (e: Exception) {
+            ru.mpei.assistant.util.AppLogger.e("BARS_REPO", "Failed to clear WebView cookies", e)
+        }
     }
 }
 

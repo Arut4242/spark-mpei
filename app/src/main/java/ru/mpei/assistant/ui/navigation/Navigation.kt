@@ -253,6 +253,16 @@ fun MainScreen(
         }
     }
 
+    var showPrivacyConsent by remember { mutableStateOf(!sessionStorage.hasAcceptedPrivacyPolicy) }
+    if (showPrivacyConsent) {
+        ru.mpei.assistant.ui.common.WelcomePrivacyDialog(
+            onAccept = {
+                sessionStorage.hasAcceptedPrivacyPolicy = true
+                showPrivacyConsent = false
+            }
+        )
+    }
+
     if (updateState !is UpdateState.Idle) {
         UpdateDialog(
             state = updateState,

@@ -13,39 +13,11 @@ import kotlinx.serialization.json.Json
 import ru.mpei.assistant.data.model.schedule.SearchEntity
 
 @Stable
-class SessionStorage(context: Context) {
+open class SessionStorage internal constructor(
+    private val sharedPreferences: SharedPreferences
+) {
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val sharedPreferences: SharedPreferences = try {
-        createEncryptedPrefs(context, masterKey)
-    } catch (e: Exception) {
-        ru.mpei.assistant.util.AppLogger.e("SessionStorage", "Ошибка инициализации EncryptedSharedPreferences, сброс повреждённого хранилища", e)
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                context.deleteSharedPreferences(PREFS_FILENAME)
-            } else {
-                context.getSharedPreferences(PREFS_FILENAME, Context.MODE_PRIVATE).edit().clear().commit()
-            }
-            createEncryptedPrefs(context, masterKey)
-        } catch (fatal: Exception) {
-            ru.mpei.assistant.util.AppLogger.e("SessionStorage", "Критическая ошибка: Android KeyStore недоступен. Открытый fallback запрещён из соображений безопасности.", fatal)
-            throw IllegalStateException("Аппаратное защищённое хранилище Android Keystore недоступно. Сохранение учётных данных в открытом виде запрещено.", fatal)
-        }
-    }
-
-    init {
-        // Гарантированное удаление устаревшего небезопасного fallback-файла при его наличии
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                context.deleteSharedPreferences(LEGACY_FALLBACK_FILENAME)
-            } else {
-                context.getSharedPreferences(LEGACY_FALLBACK_FILENAME, Context.MODE_PRIVATE).edit().clear().commit()
-            }
-        } catch (_: Exception) {}
-    }
+    constructor(context: Context) : this(initSecurePrefs(context))
 
     var barsCookies: String?
         get() = sharedPreferences.getString(KEY_BARS_COOKIES, null)
@@ -117,6 +89,10 @@ class SessionStorage(context: Context) {
     var isAutoUpdateCheckEnabled: Boolean
         get() = sharedPreferences.getBoolean(KEY_AUTO_UPDATE_CHECK_ENABLED, true)
         set(value) = sharedPreferences.edit().putBoolean(KEY_AUTO_UPDATE_CHECK_ENABLED, value).apply()
+
+    var hasAcceptedPrivacyPolicy: Boolean
+        get() = sharedPreferences.getBoolean(KEY_PRIVACY_POLICY_ACCEPTED, false)
+        set(value) = sharedPreferences.edit().putBoolean(KEY_PRIVACY_POLICY_ACCEPTED, value).apply()
 
     var githubRepo: String
         get() = sharedPreferences.getString(KEY_GITHUB_REPO, null)?.takeIf { it == DEFAULT_GITHUB_REPO } ?: DEFAULT_GITHUB_REPO
@@ -228,6 +204,39 @@ class SessionStorage(context: Context) {
         private const val PREFS_FILENAME = "bars_secure_prefs"
         private const val LEGACY_FALLBACK_FILENAME = "bars_secure_prefs_fallback"
 
+        private fun initSecurePrefs(context: Context): SharedPreferences {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+
+            val prefs = try {
+                createEncryptedPrefs(context, masterKey)
+            } catch (e: Exception) {
+                ru.mpei.assistant.util.AppLogger.e("SessionStorage", "Ошибка инициализации EncryptedSharedPreferences, сброс повреждённого хранилища", e)
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                        context.deleteSharedPreferences(PREFS_FILENAME)
+                    } else {
+                        context.getSharedPreferences(PREFS_FILENAME, Context.MODE_PRIVATE).edit().clear().commit()
+                    }
+                    createEncryptedPrefs(context, masterKey)
+                } catch (fatal: Exception) {
+                    ru.mpei.assistant.util.AppLogger.e("SessionStorage", "Критическая ошибка: Android KeyStore недоступен. Открытый fallback запрещён из соображений безопасности.", fatal)
+                    throw IllegalStateException("Аппаратное защищённое хранилище Android Keystore недоступно. Сохранение учётных данных в открытом виде запрещено.", fatal)
+                }
+            }
+
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    context.deleteSharedPreferences(LEGACY_FALLBACK_FILENAME)
+                } else {
+                    context.getSharedPreferences(LEGACY_FALLBACK_FILENAME, Context.MODE_PRIVATE).edit().clear().commit()
+                }
+            } catch (_: Exception) {}
+
+            return prefs
+        }
+
         private fun createEncryptedPrefs(context: Context, masterKey: MasterKey): SharedPreferences {
             return EncryptedSharedPreferences.create(
                 context,
@@ -256,6 +265,7 @@ class SessionStorage(context: Context) {
         private const val KEY_OSEP_PASSWORD = "key_osep_password"
         private const val KEY_EMAIL_NOTIFICATIONS_ENABLED = "key_email_notifications_enabled"
         private const val KEY_AUTO_UPDATE_CHECK_ENABLED = "key_auto_update_check_enabled"
+        private const val KEY_PRIVACY_POLICY_ACCEPTED = "key_privacy_policy_accepted"
         private const val KEY_GITHUB_REPO = "key_github_repo"
         private const val KEY_LAST_UPDATE_CHECK_TIME = "key_last_update_check_time"
         private const val KEY_APP_THEME_MODE = "key_app_theme_mode"

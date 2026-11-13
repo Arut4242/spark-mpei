@@ -1,5 +1,7 @@
 package ru.mpei.assistant.ui.settings
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,9 +19,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -524,6 +528,7 @@ fun BarsSettingsCard(
     barsRepository: BarsRepository,
     modifier: Modifier = Modifier
 ) {
+    val scope = rememberCoroutineScope()
     var isAuthorized by remember {
         mutableStateOf(barsRepository.isAuthorized())
     }
@@ -548,8 +553,10 @@ fun BarsSettingsCard(
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedButton(
                     onClick = {
-                        barsRepository.logout()
-                        isAuthorized = false
+                        scope.launch {
+                            barsRepository.logout()
+                            isAuthorized = false
+                        }
                     },
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
@@ -601,7 +608,7 @@ fun OsepSettingsCard(
                 OutlinedButton(
                     onClick = {
                         scope.launch {
-                            emailRepository.logout()
+                            emailRepository.logout(context)
                             isAuthorized = false
                             EmailCheckWorker.cancel(context)
                         }
@@ -728,6 +735,27 @@ fun AboutSettingsCard(
                     Text("Проверить обновления")
                 }
             }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            var showPrivacyDialog by remember { mutableStateOf(false) }
+            if (showPrivacyDialog) {
+                ru.mpei.assistant.ui.common.FullPrivacyDialog(onDismiss = { showPrivacyDialog = false })
+            }
+
+            OutlinedButton(
+                onClick = { showPrivacyDialog = true },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Shield,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Политика конфиденциальности")
+            }
         }
     }
 }
@@ -806,6 +834,31 @@ fun DiagnosticsSettingsCard(
                 Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Открыть консоль логов", fontSize = 13.sp)
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedButton(
+                onClick = {
+                    try {
+                        val intent = Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse("https://t.me/Qwerty28369")
+                        ).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                    } catch (_: Exception) {}
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Связь с разработчиком: @Qwerty28369", fontSize = 13.sp)
             }
         }
     }

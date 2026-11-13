@@ -209,18 +209,6 @@ fun BarsScreen(
         BarsLoginWebView(
             onDismiss = { showLoginDialog = false },
             onLoginSuccess = { cookies, studentUrl ->
-                sessionStorage.barsCookies = cookies
-                val extractedId = studentUrl?.let { url ->
-                    Regex("""studentID=([a-fA-F0-9\-]{36})""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.getOrNull(1)
-                }
-                if (!extractedId.isNullOrBlank()) {
-                    sessionStorage.barsStudentId = extractedId
-                    sessionStorage.barsStudentUrl = "https://bars.mpei.ru/bars_web/ST_Study/Main/Main?studentID=$extractedId"
-                    ru.mpei.assistant.util.AppLogger.i("BARS_SCREEN", "Saved studentId: $extractedId from URL: $studentUrl")
-                } else if (!studentUrl.isNullOrBlank() && studentUrl.contains("ST_Study/Main/Main")) {
-                    sessionStorage.barsStudentUrl = studentUrl
-                    ru.mpei.assistant.util.AppLogger.i("BARS_SCREEN", "Saved studentUrl: $studentUrl")
-                }
                 isAuthorized = true
                 showLoginDialog = false
                 if (!sessionStorage.hasShownAutostartPrompt) {
@@ -228,6 +216,7 @@ fun BarsScreen(
                     showAutostartDialog = true
                 }
                 scope.launch {
+                    barsRepository.onNewLogin(cookies, studentUrl)
                     isLoading = true
                     val res = barsRepository.refreshGrades()
                     isLoading = false

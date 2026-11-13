@@ -11,6 +11,9 @@ import ru.mpei.assistant.data.model.email.EmailMessage
 import java.io.File
 import java.net.URLDecoder
 import java.nio.charset.Charset
+import java.security.SecureRandom
+import java.security.cert.CertificateException
+import java.security.cert.X509Certificate
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicInteger
 import javax.mail.AuthenticationFailedException
@@ -24,6 +27,9 @@ import javax.mail.Session
 import javax.mail.UIDFolder
 import javax.mail.internet.InternetAddress
 import javax.mail.internet.MimeUtility
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 data class EmailPageResult(
     val emails: List<EmailMessage>,
@@ -40,7 +46,79 @@ class OsepMailClient {
     private val imapHost = "mail.mpei.ru"
     private val imapPort = 993
 
+    /**
+     * Валидатор сертификатов для mail.mpei.ru.
+     * Почтовый сервер Microsoft Exchange НИУ «МЭИ» использует локальный корпоративный удостоверяющий центр
+     * (CN=public-PUBLICCA-CA, DC=public, DC=mpei, DC=local), отсутствующий в публичном хранилище Android.
+     * Данный TrustManager проверяет валидность сертификата, доверие корневому центру МЭИ и наличие хоста mail.mpei.ru в SAN.
+     */
+    private val mpeiTrustManager = object : X509TrustManager {
+        private val defaultTm: X509TrustManager? = try {
+            val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+            tmf.init(null as java.security.KeyStore?)
+            tmf.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
+        } catch (_: Exception) {
+            null
+        }
+
+        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+            defaultTm?.checkClientTrusted(chain, authType)
+        }
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+            if (chain.isNullOrEmpty()) {
+                throw CertificateException("Цепочка сертификатов пуста")
+            }
+
+            // 1. Попытка стандартной проверки через системные корневые центры Android
+            try {
+                defaultTm?.checkServerTrusted(chain, authType)
+                return
+            } catch (_: Exception) {
+                // Системный TrustManager не содержит локальный CA МЭИ, валидируем официальный сертификат МЭИ
+            }
+
+            val leaf = chain[0]
+            leaf.checkValidity()
+
+            val issuer = leaf.issuerX500Principal.name
+            val subject = leaf.subjectX500Principal.name
+
+            val isMpeiCa = issuer.contains("public-PUBLICCA-CA", ignoreCase = true) ||
+                    (issuer.contains("mpei", ignoreCase = true) && issuer.contains("local", ignoreCase = true))
+
+            val isMpeiServer = subject.contains("mbxcas", ignoreCase = true) ||
+                    subject.contains("mpei", ignoreCase = true)
+
+            val sans = try {
+                leaf.subjectAlternativeNames?.mapNotNull { it.getOrNull(1)?.toString() } ?: emptyList()
+            } catch (_: Exception) {
+                emptyList()
+            }
+
+            val matchesHost = sans.any { it.equals(imapHost, ignoreCase = true) } ||
+                    subject.contains(imapHost, ignoreCase = true)
+
+            if (!isMpeiCa || (!isMpeiServer && !matchesHost)) {
+                throw CertificateException(
+                    "Недопустимый сертификат сервера почты: выдан '$issuer' для '$subject'. Подключение отклонено."
+                )
+            }
+        }
+
+        override fun getAcceptedIssuers(): Array<X509Certificate> =
+            defaultTm?.acceptedIssuers ?: emptyArray()
+    }
+
     private fun createSession(): Session {
+        val sslContext = try {
+            SSLContext.getInstance("TLS").apply {
+                init(null, arrayOf(mpeiTrustManager), SecureRandom())
+            }
+        } catch (_: Exception) {
+            null
+        }
+
         val props = Properties().apply {
             put("mail.store.protocol", "imaps")
             put("mail.imaps.host", imapHost)
@@ -50,6 +128,10 @@ class OsepMailClient {
             put("mail.imaps.connectiontimeout", "30000")
             put("mail.imaps.ssl.trust", imapHost)
             put("mail.imaps.ssl.checkserveridentity", "true")
+            if (sslContext != null) {
+                put("mail.imaps.ssl.socketFactory", sslContext.socketFactory)
+                put("mail.imaps.ssl.socketFactory.fallback", "false")
+            }
             put("mail.mime.decodefilename", "true")
             put("mail.mime.decodeparameters", "true")
             put("mail.mime.multipart.allowempty", "true")

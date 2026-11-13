@@ -12,6 +12,7 @@ import ru.mpei.assistant.data.network.MpeiScheduleApi
 import ru.mpei.assistant.data.parser.BarsHtmlParser
 import ru.mpei.assistant.data.repository.AbsenceRepository
 import ru.mpei.assistant.data.repository.ScheduleRepository
+import ru.mpei.assistant.security.KeystoreCrypto
 
 class BarsCheckWorker(
     private val context: Context,
@@ -65,7 +66,8 @@ class BarsCheckWorker(
                 val oldScoresMap = mutableMapOf<String, String?>()
                 for (sub in oldSubjects) {
                     try {
-                        val measures: List<ControlMeasure> = json.decodeFromString(sub.controlMeasuresJson)
+                        val decryptedJson = KeystoreCrypto.decrypt(sub.controlMeasuresJson) ?: sub.controlMeasuresJson
+                        val measures: List<ControlMeasure> = json.decodeFromString(decryptedJson)
                         for (m in measures) {
                             if (!m.grade.isNullOrBlank()) {
                                 oldScoresMap["${sub.name}_${m.name}"] = m.grade
@@ -99,7 +101,13 @@ class BarsCheckWorker(
                 }
 
                 if (newSubjects.isNotEmpty()) {
-                    db.barsDao().insertAll(newSubjects)
+                    val encryptedSubjects = newSubjects.map {
+                        val encMeasures = if (it.controlMeasuresJson.isNotEmpty() && it.controlMeasuresJson != "[]") {
+                            KeystoreCrypto.encrypt(it.controlMeasuresJson) ?: it.controlMeasuresJson
+                        } else it.controlMeasuresJson
+                        it.copy(controlMeasuresJson = encMeasures)
+                    }
+                    db.barsDao().insertAll(encryptedSubjects)
                 }
             }
         }

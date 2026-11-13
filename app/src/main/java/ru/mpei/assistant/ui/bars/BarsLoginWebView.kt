@@ -1,8 +1,11 @@
 package ru.mpei.assistant.ui.bars
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
@@ -19,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,8 +54,18 @@ fun BarsLoginWebView(
     onLoginSuccess: (cookies: String, studentUrl: String?) -> Unit
 ) {
     var isLoading by remember { mutableStateOf(true) }
+    var currentHost by remember { mutableStateOf("bars.mpei.ru") }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var detectedLoggedIn by remember { mutableStateOf(false) }
+
+    fun isAllowedUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val uri = Uri.parse(url)
+        val scheme = uri.scheme?.lowercase() ?: return false
+        if (scheme != "https" && scheme != "http") return false
+        val host = uri.host?.lowercase() ?: return false
+        return host == "bars.mpei.ru" || host == "mpei.ru" || host.endsWith(".mpei.ru")
+    }
 
     fun captureAndComplete() {
         val cookieManager = CookieManager.getInstance()
@@ -71,7 +85,28 @@ fun BarsLoginWebView(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Вход в БАРС МЭИ") },
+                title = {
+                    Column {
+                        Text("Вход в БАРС МЭИ")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Lock,
+                                contentDescription = "Защищённое подключение",
+                                modifier = Modifier.size(12.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = currentHost,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = {
                         ru.mpei.assistant.util.AppLogger.w("BARS_LOGIN", "User closed login dialog without saving (✕ clicked)")
@@ -120,6 +155,11 @@ fun BarsLoginWebView(
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Text(
+                            text = "Сессия шифруется аппаратно на вашем устройстве",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        )
                     }
                     Button(
                         onClick = {
@@ -149,18 +189,61 @@ fun BarsLoginWebView(
                             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
 
                         webViewClient = object : WebViewClient() {
+                            /**
+                             * Ограничение переходов доверенными origin (F-06):
+                             * Разрешены исключительно домены bars.mpei.ru и *.mpei.ru.
+                             * Посторонние URL блокируются в WebView и открываются во внешнем браузере.
+                             */
+                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                val url = request?.url?.toString() ?: return true
+                                if (isAllowedUrl(url)) {
+                                    return false
+                                }
+                                ru.mpei.assistant.util.AppLogger.w("BARS_LOGIN", "Blocked external navigation in WebView to: $url")
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, request?.url)
+                                    view?.context?.startActivity(intent)
+                                } catch (e: Exception) {
+                                    ru.mpei.assistant.util.AppLogger.e("BARS_LOGIN", "Failed to launch external browser for $url", e)
+                                }
+                                return true
+                            }
+
+                            @Suppress("DEPRECATION")
+                            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                                if (isAllowedUrl(url)) {
+                                    return false
+                                }
+                                ru.mpei.assistant.util.AppLogger.w("BARS_LOGIN", "Blocked external navigation in WebView to: $url")
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                    view?.context?.startActivity(intent)
+                                } catch (e: Exception) {
+                                    ru.mpei.assistant.util.AppLogger.e("BARS_LOGIN", "Failed to launch external browser for $url", e)
+                                }
+                                return true
+                            }
+
                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                 super.onPageStarted(view, url, favicon)
                                 isLoading = true
-                                ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "WebView pageStarted: $url")
+                                val parsedHost = url?.let { Uri.parse(it).host }
+                                if (!parsedHost.isNullOrBlank()) {
+                                    currentHost = parsedHost
+                                }
+                                ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "WebView pageStarted: $url (host=$currentHost)")
                             }
 
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 super.onPageFinished(view, url)
                                 isLoading = false
-                                ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "WebView pageFinished: $url")
+                                val parsedHost = url?.let { Uri.parse(it).host }
+                                if (!parsedHost.isNullOrBlank()) {
+                                    currentHost = parsedHost
+                                }
+                                ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "WebView pageFinished: $url (host=$currentHost)")
 
-                                // Check if page contains elements of logged-in portal
+                                // Проверяем, появились ли элементы авторизованного личного кабинета
                                 view?.evaluateJavascript(
                                     """(function() { 
                                         var text = (document.body ? document.body.innerText : '') || '';
@@ -182,7 +265,6 @@ fun BarsLoginWebView(
                                     ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "JS check logged-in elements: result=$result")
                                     if (result == "true") {
                                         detectedLoggedIn = true
-                                        // Auto-capture after brief delay
                                         captureAndComplete()
                                     }
                                 }

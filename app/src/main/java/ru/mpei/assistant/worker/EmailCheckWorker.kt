@@ -34,7 +34,8 @@ class EmailCheckWorker(
             if (storage.isEmailNotificationsEnabled && storage.isOsepAuthorized) {
                 val emailRepo = EmailRepository(
                     emailDao = db.emailDao(),
-                    sessionStorage = storage
+                    sessionStorage = storage,
+                    appContext = context
                 )
                 val result = emailRepo.refreshEmails(notifyOnNew = true, context = context)
                 if (result.isSuccess) {

@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -17,6 +18,7 @@ import ru.mpei.assistant.data.model.email.EmailAttachment
 import ru.mpei.assistant.data.model.email.EmailMessage
 import ru.mpei.assistant.data.network.EmailPageResult
 import ru.mpei.assistant.data.network.OsepMailClient
+import ru.mpei.assistant.security.KeystoreCrypto
 import ru.mpei.assistant.worker.NotificationHelper
 import java.io.File
 
@@ -24,7 +26,8 @@ import java.io.File
 class EmailRepository(
     private val emailDao: EmailDao,
     private val sessionStorage: SessionStorage,
-    private val mailClient: OsepMailClient = OsepMailClient()
+    private val mailClient: OsepMailClient = OsepMailClient(),
+    private val appContext: Context? = null
 ) {
     private val syncMutex = Mutex()
 
@@ -37,7 +40,37 @@ class EmailRepository(
     val hasMoreOlderEmails: Boolean
         get() = _hasMoreOlder.value
 
-    fun getEmailsFlow(): Flow<List<EmailMessage>> = emailDao.getAllEmails()
+    /**
+     * Шифрует чувствительные поля письма перед сохранением в локальную БД SQLite
+     */
+    private fun encryptEmail(email: EmailMessage): EmailMessage {
+        val encBodyText = if (email.bodyText.isNotEmpty()) {
+            KeystoreCrypto.encrypt(email.bodyText) ?: email.bodyText
+        } else email.bodyText
+        val encBodyHtml = if (!email.bodyHtml.isNullOrEmpty()) {
+            KeystoreCrypto.encrypt(email.bodyHtml)
+        } else email.bodyHtml
+        return email.copy(
+            bodyText = encBodyText,
+            bodyHtml = encBodyHtml
+        )
+    }
+
+    /**
+     * Расшифровывает тело письма при извлечении из базы данных
+     */
+    private fun decryptEmail(email: EmailMessage): EmailMessage {
+        val decBodyText = KeystoreCrypto.decrypt(email.bodyText) ?: email.bodyText
+        val decBodyHtml = KeystoreCrypto.decrypt(email.bodyHtml)
+        return email.copy(
+            bodyText = decBodyText,
+            bodyHtml = decBodyHtml
+        )
+    }
+
+    fun getEmailsFlow(): Flow<List<EmailMessage>> = emailDao.getAllEmails().map { list ->
+        list.map { decryptEmail(it) }
+    }
 
     fun getUnreadCountFlow(): Flow<Int> = emailDao.getUnreadCountFlow()
 
@@ -61,11 +94,36 @@ class EmailRepository(
         return Result.success(Unit)
     }
 
-    suspend fun logout() {
+    /**
+     * Выход из почтового аккаунта:
+     * 1. Удаление учётных данных из защищённого хранилища.
+     * 2. Полное удаление всех кэшированных писем из Room.
+     * 3. Рекурсивное удаление всех скачанных вложений из кэша (F-05).
+     */
+    suspend fun logout(context: Context? = null) {
+        ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "logout initiated")
         sessionStorage.clearOsepSession()
-        emailDao.clearAll()
+        try {
+            emailDao.clearAll()
+            ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "emailDao cleared")
+        } catch (e: Exception) {
+            ru.mpei.assistant.util.AppLogger.e("EMAIL_REPO", "Failed to clear emailDao", e)
+        }
         oldestLoadedMessageNumber = null
         _hasMoreOlder.value = true
+
+        val ctx = context ?: appContext
+        if (ctx != null) {
+            try {
+                val attachmentsDir = File(ctx.cacheDir, "mail_attachments")
+                if (attachmentsDir.exists()) {
+                    val deleted = attachmentsDir.deleteRecursively()
+                    ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "mail_attachments directory deleted on logout: $deleted")
+                }
+            } catch (e: Exception) {
+                ru.mpei.assistant.util.AppLogger.e("EMAIL_REPO", "Failed to delete mail_attachments on logout", e)
+            }
+        }
     }
 
     suspend fun markAsRead(id: Long) {
@@ -98,7 +156,7 @@ class EmailRepository(
         }
 
         val knownIds = emailDao.getAllEmailIds().toSet()
-        val cachedEmails = emailDao.getAllEmailsList().associateBy { it.id }
+        val cachedEmails = emailDao.getAllEmailsList().map { decryptEmail(it) }.associateBy { it.id }
         val fetchRes = mailClient.fetchEmailsPage(
             login = login,
             pass = pass,
@@ -119,8 +177,11 @@ class EmailRepository(
         val emails = pageResult.emails
         ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "refreshEmails: received ${emails.size} emails from IMAP")
         if (emails.isNotEmpty()) {
-            emailDao.insertEmails(emails)
-            ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "refreshEmails: saved ${emails.size} emails to database")
+            emailDao.insertEmails(emails.map { encryptEmail(it) })
+            ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "refreshEmails: saved ${emails.size} encrypted emails to database")
+
+            // Минимизация кэша: удаляем тела устаревших писем (F-03)
+            pruneOldEmailBodies(keepCount = 50)
 
             // Если это фоновая проверка и уже были известные письма, уведомляем о новых
             if (notifyOnNew && context != null && knownIds.isNotEmpty()) {
@@ -155,7 +216,7 @@ class EmailRepository(
             return Result.success(0)
         }
 
-        val cachedEmails = emailDao.getAllEmailsList().associateBy { it.id }
+        val cachedEmails = emailDao.getAllEmailsList().map { decryptEmail(it) }.associateBy { it.id }
         val fetchRes = mailClient.fetchEmailsPage(
             login = login,
             pass = pass,
@@ -176,10 +237,37 @@ class EmailRepository(
         val emails = pageResult.emails
         ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "loadOlderEmails: received ${emails.size} older emails from IMAP")
         if (emails.isNotEmpty()) {
-            emailDao.insertEmails(emails)
+            emailDao.insertEmails(emails.map { encryptEmail(it) })
+            pruneOldEmailBodies(keepCount = 50)
         }
 
         return Result.success(emails.size)
+    }
+
+    /**
+     * Минимизация кэша писем (F-03): тела старых писем обнуляются в БД,
+     * оставляя метаданные и тему в списке, при этом содержимое можно догрузить по нажатию.
+     */
+    private suspend fun pruneOldEmailBodies(keepCount: Int = 50) {
+        try {
+            val all = emailDao.getAllEmailsList()
+            if (all.size > keepCount) {
+                val toPrune = all.sortedByDescending { it.dateMillis }.drop(keepCount)
+                val pruned = toPrune.filter { it.bodyText.isNotEmpty() || !it.bodyHtml.isNullOrEmpty() }
+                    .map {
+                        it.copy(
+                            bodyText = "",
+                            bodyHtml = null
+                        )
+                    }
+                if (pruned.isNotEmpty()) {
+                    emailDao.insertEmails(pruned)
+                    ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "Pruned bodies for ${pruned.size} old emails to minimize sensitive storage")
+                }
+            }
+        } catch (e: Exception) {
+            ru.mpei.assistant.util.AppLogger.w("EMAIL_REPO", "Failed pruning old bodies: ${e.message}")
+        }
     }
 
     suspend fun repairBlankEmails() {
@@ -193,7 +281,7 @@ class EmailRepository(
                 try {
                     val res = mailClient.fetchMessageByUid(login, pass, blank.id)
                     if (res.isSuccess) {
-                        emailDao.insertEmails(listOf(res.getOrThrow()))
+                        emailDao.insertEmails(listOf(encryptEmail(res.getOrThrow())))
                         ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "Successfully repaired blank email UID=${blank.id}")
                     }
                 } catch (e: Exception) {
@@ -215,7 +303,7 @@ class EmailRepository(
         val res = mailClient.fetchMessageByUid(login, pass, uid)
         if (res.isSuccess) {
             val email = res.getOrThrow()
-            emailDao.insertEmails(listOf(email))
+            emailDao.insertEmails(listOf(encryptEmail(email)))
             return Result.success(email)
         }
         return res
