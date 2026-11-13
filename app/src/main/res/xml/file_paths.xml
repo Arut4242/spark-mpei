@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="mail_attachments" path="mail_attachments/" />
+    <external-cache-path name="ext_mail_attachments" path="mail_attachments/" />
+    <external-files-path name="downloads" path="Download/" />
+    <cache-path name="updates" path="updates/" />
+</paths>

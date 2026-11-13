@@ -1,0 +1,10 @@
+## Template for local.properties
+# Location of the Android SDK
+sdk.dir=C\:\\Users\\<YourUsername>\\AppData\\Local\\Android\\Sdk
+
+# Release signing configuration (Optional - needed only for building signed release APKs)
+# Never commit local.properties or *.jks files to version control!
+RELEASE_STORE_FILE=spark-release.jks
+RELEASE_STORE_PASSWORD=your_keystore_password
+RELEASE_KEY_ALIAS=spark
+RELEASE_KEY_PASSWORD=your_key_password
