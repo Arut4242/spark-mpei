@@ -15,9 +15,8 @@ import ru.mpei.assistant.util.AppLogger
 import java.util.concurrent.TimeUnit
 
 /**
- * Фоновый воркер для проверки почты ОСЭП МЭИ с интервалом 10 минут.
- * Использует цепочку OneTimeWorkRequest, так как минимальный интервал PeriodicWorkRequest
- * в Android WorkManager составляет 15 минут.
+ * Фоновый воркер для проверки почты ОСЭП МЭИ с интервалом 30 минут.
+ * Прекращает фоновые опросы при неудачной аутентификации для защиты от блокировки аккаунта.
  */
 class EmailCheckWorker(
     private val context: Context,
@@ -28,7 +27,8 @@ class EmailCheckWorker(
         val storage = SessionStorage(context)
         val db = AppDatabase.getInstance(context)
 
-        AppLogger.i("EMAIL_WORKER", "Запуск проверки почты ОСЭП МЭИ (интервал 10 мин)...")
+        AppLogger.i("EMAIL_WORKER", "Запуск проверки почты ОСЭП МЭИ (интервал 30 мин)...")
+        var shouldReschedule = true
 
         try {
             if (storage.isEmailNotificationsEnabled && storage.isOsepAuthorized) {
@@ -40,16 +40,26 @@ class EmailCheckWorker(
                 if (result.isSuccess) {
                     AppLogger.i("EMAIL_WORKER", "Проверка почты успешно завершена")
                 } else {
-                    AppLogger.w("EMAIL_WORKER", "Ошибка проверки почты: ${result.exceptionOrNull()?.message}")
+                    val ex = result.exceptionOrNull()
+                    AppLogger.w("EMAIL_WORKER", "Ошибка проверки почты: ${ex?.message}")
+                    if (ex is javax.mail.AuthenticationFailedException) {
+                        AppLogger.w("EMAIL_WORKER", "Неверный логин или пароль почты. Остановка фоновой работы во избежание блокировки.")
+                        shouldReschedule = false
+                    }
                 }
             } else {
                 AppLogger.d("EMAIL_WORKER", "Пропуск проверки почты: уведомления=${storage.isEmailNotificationsEnabled}, авторизован=${storage.isOsepAuthorized}")
             }
         } catch (e: Exception) {
             AppLogger.e("EMAIL_WORKER", "Исключение при фоновой проверке почты", e)
+            if (e is javax.mail.AuthenticationFailedException) {
+                AppLogger.w("EMAIL_WORKER", "Неверный логин или пароль почты. Остановка фоновой работы во избежание блокировки.")
+                shouldReschedule = false
+            }
         } finally {
-            // Планируем следующую проверку через 10 минут
-            scheduleNext(context)
+            if (shouldReschedule) {
+                scheduleNext(context)
+            }
         }
 
         return Result.success()
@@ -57,7 +67,7 @@ class EmailCheckWorker(
 
     companion object {
         const val WORK_NAME = "email_sync_work"
-        const val INTERVAL_MINUTES = 10L
+        const val INTERVAL_MINUTES = 30L
 
         fun scheduleNext(context: Context) {
             val storage = SessionStorage(context)

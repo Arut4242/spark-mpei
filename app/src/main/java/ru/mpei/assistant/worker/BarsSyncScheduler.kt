@@ -10,12 +10,12 @@ import java.util.concurrent.TimeUnit
 
 object BarsSyncScheduler {
     const val WORK_NAME = "bars_sync_work"
-    const val DEFAULT_INTERVAL_MINUTES = 30L // 30 минут (оценки и пропуски)
+    const val DEFAULT_INTERVAL_MINUTES = 60L // 1 час (по умолчанию)
 
     val AVAILABLE_INTERVALS = listOf(
         15L,   // 15 минут (минимум Android)
-        30L,   // 30 минут (по умолчанию)
-        60L,   // 1 час
+        30L,   // 30 минут
+        60L,   // 1 час (по умолчанию)
         120L,  // 2 часа
         180L,  // 3 часа
         360L,  // 6 часов
@@ -41,15 +41,15 @@ object BarsSyncScheduler {
         )
     }
 
-    fun isHighRisk(minutes: Long): Boolean = minutes <= 30L
+    fun isHighRisk(minutes: Long): Boolean = minutes < 60L
 
     fun getIntervalLabel(minutes: Long): String {
         return when (minutes) {
             15L -> "15 минут (Высокий риск блокировки)"
-            30L -> "30 минут (По умолчанию, Оценки и пропуски)"
-            60L -> "1 час"
+            30L -> "30 минут (Повышенная нагрузка)"
+            60L -> "1 час (По умолчанию)"
             120L -> "2 часа"
-            180L -> "3 часа"
+            180L -> "3 часа (Рекомендуемый)"
             360L -> "6 часов (Энергосберегающий)"
             720L -> "12 часов"
             else -> "$minutes мин"

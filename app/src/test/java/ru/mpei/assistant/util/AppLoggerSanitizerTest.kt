@@ -70,4 +70,13 @@ class AppLoggerSanitizerTest {
         assertFalse(sanitized2.contains("Secret12345!"))
         assertTrue(sanitized2.contains("password=[СКРЫТО]"))
     }
+
+    @Test
+    fun `test url query parameters and studentId are masked`() {
+        val raw = "Requesting https://bars.mpei.ru/bars_web/ST_Study/Main/Main?studentID=1f061364-9447-ee11-80da-005056be401c&sem=2026-1"
+        val sanitized = AppLogger.sanitize(raw)
+        assertFalse(sanitized.contains("1f061364-9447-ee11-80da-005056be401c"))
+        assertFalse(sanitized.contains("sem=2026-1"))
+        assertTrue(sanitized.contains("?[ПАРАМЕТРЫ_СКРЫТЫ]"))
+    }
 }

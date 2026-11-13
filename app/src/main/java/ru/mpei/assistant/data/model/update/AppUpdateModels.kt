@@ -37,7 +37,8 @@ sealed interface UpdateState {
         val currentVersion: String,
         val changelog: String,
         val downloadUrl: String,
-        val apkSize: Long
+        val apkSize: Long,
+        val expectedSha256: String? = null
     ) : UpdateState
     data class Downloading(
         val progress: Float,

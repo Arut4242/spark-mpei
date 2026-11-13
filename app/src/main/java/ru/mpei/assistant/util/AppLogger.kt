@@ -21,6 +21,7 @@ object AppLogger {
 
     private const val TAG_DEFAULT = "SparkApp"
     private const val MAX_MEMORY_LOGS = 1500
+    private const val MAX_LOG_FILE_SIZE = 512 * 1024L // 512 КБ лимит файла логов с ротацией
     private val memoryLogs = ConcurrentLinkedQueue<String>()
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
     private var logFile: File? = null
@@ -109,9 +110,20 @@ object AppLogger {
             "$firstLetter*** [ФИО]"
         }
 
-        // 6. UUID / studentId: 1f061364-9447-ee11-80da-005056be401c -> ***-401c
+        // 6. UUID / GUID: 1f061364-9447-ee11-80da-005056be401c -> ***-401c
         text = text.replace(Regex("""\b([a-fA-F0-9]{8})-([a-fA-F0-9]{4})-([a-fA-F0-9]{4})-([a-fA-F0-9]{4})-([a-fA-F0-9]{8})([a-fA-F0-9]{4})\b""")) { mr ->
             "***-${mr.groupValues[6]}"
+        }
+
+        // 7. studentId (числовые или нестандартные): studentId=12345 -> studentId=[СКРЫТО]
+        text = text.replace(Regex("""(?i)\b(studentId|student_id|studId)\s*[:=]\s*(['"]?)([A-Za-z0-9_-]{1,35})\2""")) { mr ->
+            val v = mr.groupValues[3]
+            if (v.startsWith("***-")) mr.value else "${mr.groupValues[1]}=[СКРЫТО]"
+        }
+
+        // 8. URL query параметры (https://bars.mpei.ru/...?studentID=... -> https://bars.mpei.ru/...?[ПАРАМЕТРЫ_СКРЫТЫ])
+        text = text.replace(Regex("""(https?://[^\s?#]+)\?([^\s#]+)""")) { mr ->
+            "${mr.groupValues[1]}?[ПАРАМЕТРЫ_СКРЫТЫ]"
         }
 
         return text
@@ -136,6 +148,12 @@ object AppLogger {
 
         logFile?.let { file ->
             try {
+                // Ротация при превышении лимита размера файла
+                if (file.exists() && file.length() > MAX_LOG_FILE_SIZE) {
+                    val oldFile = File(file.parentFile, "${file.name}.old")
+                    if (oldFile.exists()) oldFile.delete()
+                    file.renameTo(oldFile)
+                }
                 FileWriter(file, true).use { writer ->
                     writer.write(entry + "\n")
                 }

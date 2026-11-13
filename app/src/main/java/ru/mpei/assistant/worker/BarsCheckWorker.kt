@@ -44,12 +44,17 @@ class BarsCheckWorker(
         val client = BarsWebClient(storage)
         var anySuccess = false
         var anyFailure = false
+        var isAuthError = false
 
         // 1. Проверка новых оценок
         if (checkGrades) {
             val htmlResult = client.fetchGradesHtml()
             if (htmlResult.isFailure) {
                 anyFailure = true
+                val ex = htmlResult.exceptionOrNull()
+                if (ex is IllegalStateException && ex.message?.contains("сессия", ignoreCase = true) == true) {
+                    isAuthError = true
+                }
             } else {
                 anySuccess = true
                 val html = htmlResult.getOrThrow()
@@ -118,6 +123,11 @@ class BarsCheckWorker(
             } catch (e: Exception) {
                 anyFailure = true
             }
+        }
+
+        if (isAuthError) {
+            ru.mpei.assistant.util.AppLogger.w("BARS_CHECK_WORKER", "Сессия БАРС истекла. Остановка повторных попыток до входа пользователя.")
+            return Result.success()
         }
 
         return if (!anySuccess && anyFailure) Result.retry() else Result.success()

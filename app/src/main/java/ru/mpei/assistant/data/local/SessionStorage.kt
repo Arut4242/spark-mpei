@@ -20,16 +20,31 @@ class SessionStorage(context: Context) {
         .build()
 
     private val sharedPreferences: SharedPreferences = try {
-        EncryptedSharedPreferences.create(
-            context,
-            "bars_secure_prefs",
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
+        createEncryptedPrefs(context, masterKey)
     } catch (e: Exception) {
-        // Fallback for devices where keystore might throw an issue
-        context.getSharedPreferences("bars_secure_prefs_fallback", Context.MODE_PRIVATE)
+        ru.mpei.assistant.util.AppLogger.e("SessionStorage", "Ошибка инициализации EncryptedSharedPreferences, сброс повреждённого хранилища", e)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                context.deleteSharedPreferences(PREFS_FILENAME)
+            } else {
+                context.getSharedPreferences(PREFS_FILENAME, Context.MODE_PRIVATE).edit().clear().commit()
+            }
+            createEncryptedPrefs(context, masterKey)
+        } catch (fatal: Exception) {
+            ru.mpei.assistant.util.AppLogger.e("SessionStorage", "Критическая ошибка: Android KeyStore недоступен. Открытый fallback запрещён из соображений безопасности.", fatal)
+            throw IllegalStateException("Аппаратное защищённое хранилище Android Keystore недоступно. Сохранение учётных данных в открытом виде запрещено.", fatal)
+        }
+    }
+
+    init {
+        // Гарантированное удаление устаревшего небезопасного fallback-файла при его наличии
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                context.deleteSharedPreferences(LEGACY_FALLBACK_FILENAME)
+            } else {
+                context.getSharedPreferences(LEGACY_FALLBACK_FILENAME, Context.MODE_PRIVATE).edit().clear().commit()
+            }
+        } catch (_: Exception) {}
     }
 
     var barsCookies: String?
@@ -80,7 +95,7 @@ class SessionStorage(context: Context) {
         set(value) = sharedPreferences.edit().putLong(KEY_LAST_SCHEDULE_SYNC, value).apply()
 
     var syncIntervalMinutes: Long
-        get() = sharedPreferences.getLong(KEY_SYNC_INTERVAL_MINUTES, 30L)
+        get() = sharedPreferences.getLong(KEY_SYNC_INTERVAL_MINUTES, 60L)
         set(value) = sharedPreferences.edit().putLong(KEY_SYNC_INTERVAL_MINUTES, value).apply()
 
     var appThemeMode: String
@@ -210,6 +225,19 @@ class SessionStorage(context: Context) {
     }
 
     companion object {
+        private const val PREFS_FILENAME = "bars_secure_prefs"
+        private const val LEGACY_FALLBACK_FILENAME = "bars_secure_prefs_fallback"
+
+        private fun createEncryptedPrefs(context: Context, masterKey: MasterKey): SharedPreferences {
+            return EncryptedSharedPreferences.create(
+                context,
+                PREFS_FILENAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }
+
         private const val KEY_BARS_COOKIES = "key_bars_cookies"
         private const val KEY_BARS_STUDENT_URL = "key_bars_student_url"
         private const val KEY_BARS_STUDENT_ID = "key_bars_student_id"

@@ -2,6 +2,7 @@ package ru.mpei.assistant.data.network
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import ru.mpei.assistant.data.local.SessionStorage
@@ -17,6 +18,12 @@ class BarsWebClient(private val sessionStorage: SessionStorage) {
         .build()
 
     suspend fun fetchHtml(url: String = BARS_BASE_URL): Result<String> = withContext(Dispatchers.IO) {
+        val parsedUri = url.toHttpUrlOrNull()
+        if (parsedUri == null || !parsedUri.isHttps || !parsedUri.host.equals("bars.mpei.ru", ignoreCase = true)) {
+            ru.mpei.assistant.util.AppLogger.e("BARS_WEB", "fetchHtml BLOCKED insecure/external url: $url")
+            return@withContext Result.failure(SecurityException("Запрос отклонён: разрешены исключительно защищённые HTTPS-запросы к bars.mpei.ru"))
+        }
+
         val cookies = sessionStorage.barsCookies
         if (cookies.isNullOrBlank()) {
             ru.mpei.assistant.util.AppLogger.w("BARS_WEB", "fetchHtml aborted: cookies are null or blank for url=$url")
@@ -207,16 +214,23 @@ class BarsWebClient(private val sessionStorage: SessionStorage) {
                 ?: doc.select("a[href*='studentID']").firstOrNull()
 
             if (link != null) {
-                var href = link.attr("href")
-                if (!href.startsWith("http")) {
+                var href = link.attr("href").trim()
+                if (href.startsWith("http://")) {
+                    href = "https://" + href.removePrefix("http://")
+                } else if (!href.startsWith("https://")) {
                     href = if (href.startsWith("/")) "https://bars.mpei.ru$href" else "https://bars.mpei.ru/bars_web/$href"
                 }
-                ru.mpei.assistant.util.AppLogger.i("BARS_WEB", "Found student study link on portal: $href. Following it...")
-                sessionStorage.barsStudentUrl = href
-                val id = extractStudentIdFromHtml(href)
-                if (!id.isNullOrBlank() && sessionStorage.barsStudentId.isNullOrBlank()) {
-                    sessionStorage.barsStudentId = id
-                    return fetchGradesHtml(semesterId = semesterId)
+                val checkUri = href.toHttpUrlOrNull()
+                if (checkUri != null && checkUri.isHttps && checkUri.host.equals("bars.mpei.ru", ignoreCase = true)) {
+                    ru.mpei.assistant.util.AppLogger.i("BARS_WEB", "Found student study link on portal: $href. Following it...")
+                    sessionStorage.barsStudentUrl = href
+                    val id = extractStudentIdFromHtml(href)
+                    if (!id.isNullOrBlank() && sessionStorage.barsStudentId.isNullOrBlank()) {
+                        sessionStorage.barsStudentId = id
+                        return fetchGradesHtml(semesterId = semesterId)
+                    }
+                } else {
+                    ru.mpei.assistant.util.AppLogger.w("BARS_WEB", "Ignored untrusted study link: $href")
                 }
             }
         }

@@ -2,6 +2,7 @@ package ru.mpei.assistant.data.repository
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -17,6 +18,7 @@ import ru.mpei.assistant.data.model.update.GitHubRelease
 import ru.mpei.assistant.data.model.update.UpdateState
 import ru.mpei.assistant.util.AppLogger
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class UpdateRepository(
@@ -124,13 +126,20 @@ class UpdateRepository(
 
                 val changelog = release.body.orEmpty().trim().ifBlank { "Список изменений не указан разработчиком." }
 
+                // Извлечение ожидаемой контрольной суммы SHA-256 из описания релиза или sha256-ассета
+                val shaRegex = Regex("""(?i)\b(?:sha256|sha-256|хэш|хеш)\s*[:=]\s*([a-fA-F0-9]{64})\b""")
+                val shaFromBody = shaRegex.find(changelog)?.groupValues?.get(1)
+                val shaAsset = release.assets.firstOrNull { it.name.endsWith(".sha256", ignoreCase = true) }
+                val expectedSha = shaFromBody ?: shaAsset?.let { fetchRemoteSha(it.downloadUrl) }
+
                 Result.success(
                     UpdateState.UpdateAvailable(
                         newVersion = remoteVersion.removePrefix("v"),
                         currentVersion = currentVersion,
                         changelog = changelog,
                         downloadUrl = apkAsset.downloadUrl,
-                        apkSize = apkAsset.size
+                        apkSize = apkAsset.size,
+                        expectedSha256 = expectedSha
                     )
                 )
             } else {
@@ -142,11 +151,87 @@ class UpdateRepository(
         }
     }
 
+    private fun fetchRemoteSha(shaUrl: String): String? {
+        return try {
+            val req = Request.Builder().url(shaUrl).build()
+            val resp = okHttpClient.newCall(req).execute()
+            if (resp.isSuccessful) {
+                val content = resp.body?.string().orEmpty().trim()
+                Regex("""\b([a-fA-F0-9]{64})\b""").find(content)?.groupValues?.get(1)
+            } else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
-     * Скачивает APK обновления во внутренний кэш приложения.
+     * Вычисляет SHA-256 хеш файла для проверки целостности.
+     */
+    fun calculateFileSha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { fis ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (fis.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Сверяет цифровой сертификат подписи скачанного APK с текущим установленным приложением.
+     */
+    fun verifyApkSignature(apkFile: File): Boolean {
+        val pm = context.packageManager
+        return try {
+            val currentSignatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val pkgInfo = pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+                pkgInfo.signingInfo?.apkContentsSigners?.map { it.toByteArray() }
+            } else {
+                @Suppress("DEPRECATION")
+                val pkgInfo = pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+                @Suppress("DEPRECATION")
+                pkgInfo.signatures?.map { it.toByteArray() }
+            } ?: return false
+
+            val archiveSignatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val archiveInfo = pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
+                archiveInfo?.signingInfo?.apkContentsSigners?.map { it.toByteArray() }
+            } else {
+                @Suppress("DEPRECATION")
+                val archiveInfo = pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNATURES)
+                @Suppress("DEPRECATION")
+                archiveInfo?.signatures?.map { it.toByteArray() }
+            } ?: return false
+
+            if (currentSignatures.isEmpty() || archiveSignatures.isEmpty()) {
+                AppLogger.w("UPDATE_REPO", "No signatures found in current app or downloaded archive")
+                return false
+            }
+
+            // Проверяем наличие хотя бы одного совпадающего сертификата подписи
+            val matched = currentSignatures.any { cur ->
+                archiveSignatures.any { arch -> cur.contentEquals(arch) }
+            }
+            if (!matched) {
+                AppLogger.e("UPDATE_REPO", "Signature mismatch between installed app and downloaded APK!")
+            } else {
+                AppLogger.i("UPDATE_REPO", "APK signature verification successful: matches installed app key")
+            }
+            matched
+        } catch (e: Exception) {
+            AppLogger.e("UPDATE_REPO", "Error checking APK signatures", e)
+            false
+        }
+    }
+
+    /**
+     * Скачивает APK обновления во внутренний кэш приложения с проверкой целостности и подписи.
      */
     suspend fun downloadApk(
         downloadUrl: String,
+        expectedSha256: String? = null,
         onProgress: (progress: Float, downloadedBytes: Long, totalBytes: Long) -> Unit
     ): Result<File> = withContext(Dispatchers.IO) {
         try {
@@ -187,6 +272,33 @@ class UpdateRepository(
             }
 
             AppLogger.i("UPDATE_REPO", "APK downloaded successfully. Size: ${apkFile.length()} bytes")
+
+            // 1. Проверка контрольной суммы (если задана)
+            if (!expectedSha256.isNullOrBlank()) {
+                val actualSha = calculateFileSha256(apkFile)
+                if (!actualSha.equals(expectedSha256.trim(), ignoreCase = true)) {
+                    apkFile.delete()
+                    AppLogger.e("UPDATE_REPO", "SHA-256 mismatch! Expected: $expectedSha256, actual: $actualSha")
+                    return@withContext Result.failure(
+                        SecurityException("Контрольная сумма скачанного файла не совпадает! Файл повреждён или подменён.")
+                    )
+                }
+                AppLogger.i("UPDATE_REPO", "SHA-256 verification successful")
+            }
+
+            // 2. Проверка цифрового сертификата подписи
+            val isSignatureValid = verifyApkSignature(apkFile)
+            if (!isSignatureValid) {
+                if (!BuildConfig.DEBUG) {
+                    apkFile.delete()
+                    return@withContext Result.failure(
+                        SecurityException("Подпись файла обновления не совпадает с оригинальной подписью приложения. Установка отклонена.")
+                    )
+                } else {
+                    AppLogger.w("UPDATE_REPO", "DEBUG mode: Signature mismatch warning logged, proceeding for testing.")
+                }
+            }
+
             Result.success(apkFile)
         } catch (e: Exception) {
             AppLogger.e("UPDATE_REPO", "Download APK failed", e)
@@ -211,12 +323,25 @@ class UpdateRepository(
     }
 
     /**
-     * Запускает системный установщик Android для скачанного APK с fallback в браузер.
+     * Запускает системный установщик Android для скачанного APK с проверкой разрешений.
      */
     fun installApk(apkFile: File, fallbackUrl: String? = null): Result<Unit> {
         return try {
             if (!apkFile.exists() || apkFile.length() == 0L) {
                 return Result.failure(Exception("Файл обновления не найден на устройстве"))
+            }
+
+            // Проверка разрешения на установку из неизвестных источников (Android 8.0+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    AppLogger.w("UPDATE_REPO", "REQUEST_INSTALL_PACKAGES not granted, opening system settings")
+                    val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(settingsIntent)
+                    return Result.failure(SecurityException("Необходимо разрешить установку приложений из этого источника в настройках"))
+                }
             }
 
             val apkUri = FileProvider.getUriForFile(

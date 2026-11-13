@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Stable
 import kotlinx.coroutines.flow.Flow
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 import java.io.File
 import java.net.URLEncoder
@@ -281,15 +282,23 @@ class AbsenceRepository(
             }
 
             var attMeta = if (attendanceLink != null) {
-                var attUrl = attendanceLink.attr("href")
-                if (!attUrl.startsWith("http")) {
+                var attUrl = attendanceLink.attr("href").trim()
+                if (attUrl.startsWith("http://")) {
+                    attUrl = "https://" + attUrl.removePrefix("http://")
+                } else if (!attUrl.startsWith("https://")) {
                     attUrl = if (attUrl.startsWith("/")) "https://bars.mpei.ru$attUrl" else "https://bars.mpei.ru/bars_web/$attUrl"
                 }
-                ru.mpei.assistant.util.AppLogger.i("ABSENCE_REPO", "Found attendance link: $attUrl")
-                val attPageRes = barsClient.fetchHtml(attUrl)
-                if (attPageRes.isSuccess) {
-                    BarsAttendanceParser.extractMeta(attPageRes.getOrThrow())
-                } else null
+                val checkUri = attUrl.toHttpUrlOrNull()
+                if (checkUri != null && checkUri.isHttps && checkUri.host.equals("bars.mpei.ru", ignoreCase = true)) {
+                    ru.mpei.assistant.util.AppLogger.i("ABSENCE_REPO", "Found attendance link: $attUrl")
+                    val attPageRes = barsClient.fetchHtml(attUrl)
+                    if (attPageRes.isSuccess) {
+                        BarsAttendanceParser.extractMeta(attPageRes.getOrThrow())
+                    } else null
+                } else {
+                    ru.mpei.assistant.util.AppLogger.w("ABSENCE_REPO", "Ignored untrusted attendance link: $attUrl")
+                    null
+                }
             } else null
 
             val actualStudentId = attMeta?.studentId ?: studentId

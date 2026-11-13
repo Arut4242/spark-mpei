@@ -1301,6 +1301,7 @@ fun EmailHtmlViewer(
                     setSupportZoom(true)
                     builtInZoomControls = true
                     displayZoomControls = false
+                    blockNetworkImage = true // Защита от скрытых веб-маяков и трекинговых пикселей
                 }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {

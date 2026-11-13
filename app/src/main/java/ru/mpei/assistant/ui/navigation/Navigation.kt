@@ -258,8 +258,23 @@ fun MainScreen(
             state = updateState,
             onDismiss = { updateState = UpdateState.Idle },
             onStartDownload = { url ->
-                updateRepository.openDownloadInBrowser(url)
-                updateState = UpdateState.Idle
+                val currentUpdate = updateState as? UpdateState.UpdateAvailable
+                scope.launch {
+                    updateState = UpdateState.Downloading(0f, 0L, currentUpdate?.apkSize ?: 0L)
+                    val res = updateRepository.downloadApk(
+                        downloadUrl = url,
+                        expectedSha256 = currentUpdate?.expectedSha256,
+                        onProgress = { progress, downloaded, total ->
+                            updateState = UpdateState.Downloading(progress, downloaded, total)
+                        }
+                    )
+                    if (res.isSuccess) {
+                        updateState = UpdateState.ReadyToInstall(res.getOrThrow().absolutePath)
+                    } else {
+                        val errMsg = res.exceptionOrNull()?.message ?: "Ошибка загрузки файла"
+                        updateState = UpdateState.Error(errMsg)
+                    }
+                }
             },
             onInstall = { path ->
                 val file = File(path)
