@@ -323,25 +323,12 @@ class UpdateRepository(
     }
 
     /**
-     * Запускает системный установщик Android для скачанного APK с проверкой разрешений.
+     * Запускает системный установщик Android для скачанного APK с fallback в браузер.
      */
     fun installApk(apkFile: File, fallbackUrl: String? = null): Result<Unit> {
         return try {
             if (!apkFile.exists() || apkFile.length() == 0L) {
                 return Result.failure(Exception("Файл обновления не найден на устройстве"))
-            }
-
-            // Проверка разрешения на установку из неизвестных источников (Android 8.0+)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (!context.packageManager.canRequestPackageInstalls()) {
-                    AppLogger.w("UPDATE_REPO", "REQUEST_INSTALL_PACKAGES not granted, opening system settings")
-                    val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(settingsIntent)
-                    return Result.failure(SecurityException("Необходимо разрешить установку приложений из этого источника в настройках"))
-                }
             }
 
             val apkUri = FileProvider.getUriForFile(
