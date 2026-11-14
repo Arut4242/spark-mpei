@@ -18,6 +18,7 @@ import ru.mpei.assistant.data.model.email.EmailAttachment
 import ru.mpei.assistant.data.model.email.EmailMessage
 import ru.mpei.assistant.data.network.EmailPageResult
 import ru.mpei.assistant.data.network.OsepMailClient
+import ru.mpei.assistant.security.DataCrypto
 import ru.mpei.assistant.security.KeystoreCrypto
 import ru.mpei.assistant.worker.NotificationHelper
 import java.io.File
@@ -27,7 +28,8 @@ class EmailRepository(
     private val emailDao: EmailDao,
     private val sessionStorage: SessionStorage,
     private val mailClient: OsepMailClient = OsepMailClient(),
-    private val appContext: Context? = null
+    private val appContext: Context? = null,
+    private val crypto: DataCrypto = KeystoreCrypto
 ) {
     private val syncMutex = Mutex()
 
@@ -40,15 +42,32 @@ class EmailRepository(
     val hasMoreOlderEmails: Boolean
         get() = _hasMoreOlder.value
 
+    private suspend fun readCachedEmails(): Map<Long, EmailMessage> {
+        val cached = mutableMapOf<Long, EmailMessage>()
+
+        for (email in emailDao.getAllEmailsList()) {
+            try {
+                cached[email.id] = decryptEmail(email)
+            } catch (e: KeystoreCrypto.DecryptionException) {
+                ru.mpei.assistant.util.AppLogger.w(
+                    "EMAIL_REPO",
+                    "Повреждённое письмо UID=${email.id} исключено из кэша загрузки"
+                )
+            }
+        }
+
+        return cached
+    }
+
     /**
      * Шифрует чувствительные поля письма перед сохранением в локальную БД SQLite
      */
     private fun encryptEmail(email: EmailMessage): EmailMessage {
         val encBodyText = if (email.bodyText.isNotEmpty()) {
-            KeystoreCrypto.encrypt(email.bodyText) ?: email.bodyText
+            checkNotNull(crypto.encrypt(email.bodyText))
         } else email.bodyText
         val encBodyHtml = if (!email.bodyHtml.isNullOrEmpty()) {
-            KeystoreCrypto.encrypt(email.bodyHtml)
+            checkNotNull(crypto.encrypt(email.bodyHtml))
         } else email.bodyHtml
         return email.copy(
             bodyText = encBodyText,
@@ -60,16 +79,24 @@ class EmailRepository(
      * Расшифровывает тело письма при извлечении из базы данных
      */
     private fun decryptEmail(email: EmailMessage): EmailMessage {
-        val decBodyText = KeystoreCrypto.decrypt(email.bodyText) ?: email.bodyText
-        val decBodyHtml = KeystoreCrypto.decrypt(email.bodyHtml)
+        val decBodyText = checkNotNull(crypto.decrypt(email.bodyText))
+        val decBodyHtml = email.bodyHtml?.let { checkNotNull(crypto.decrypt(it)) }
         return email.copy(
             bodyText = decBodyText,
             bodyHtml = decBodyHtml
         )
     }
 
+    private val _cacheReadError = MutableStateFlow<Throwable?>(null)
+    val cacheReadError = _cacheReadError.asStateFlow()
+
     fun getEmailsFlow(): Flow<List<EmailMessage>> = emailDao.getAllEmails().map { list ->
-        list.map { decryptEmail(it) }
+        try {
+            list.map { decryptEmail(it) }.also { _cacheReadError.value = null }
+        } catch (e: KeystoreCrypto.DecryptionException) {
+            _cacheReadError.value = e
+            emptyList()
+        }
     }
 
     fun getUnreadCountFlow(): Flow<Int> = emailDao.getUnreadCountFlow()
@@ -90,8 +117,7 @@ class EmailRepository(
         sessionStorage.osepLogin = login.trim()
         sessionStorage.osepPassword = pass
         ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "Login success, credentials saved in SessionStorage")
-        refreshEmails(notifyOnNew = false)
-        return Result.success(Unit)
+        return refreshEmails(notifyOnNew = false).map { Unit }
     }
 
     /**
@@ -149,99 +175,113 @@ class EmailRepository(
         context: Context? = null,
         pageSize: Int = 25
     ): Result<List<EmailMessage>> = syncMutex.withLock {
-        val login = sessionStorage.osepLogin
-        val pass = sessionStorage.osepPassword
-        if (login.isNullOrBlank() || pass.isNullOrBlank()) {
-            return Result.failure(Exception("Пользователь не авторизован в ОСЭП"))
-        }
+        try {
+            val login = sessionStorage.osepLogin
+            val pass = sessionStorage.osepPassword
+            if (login.isNullOrBlank() || pass.isNullOrBlank()) {
+                return Result.failure(Exception("Пользователь не авторизован в ОСЭП"))
+            }
 
-        val knownIds = emailDao.getAllEmailIds().toSet()
-        val cachedEmails = emailDao.getAllEmailsList().map { decryptEmail(it) }.associateBy { it.id }
-        val fetchRes = mailClient.fetchEmailsPage(
-            login = login,
-            pass = pass,
-            beforeMessageNumber = null,
-            pageSize = pageSize,
-            cachedEmails = cachedEmails
-        )
-        if (fetchRes.isFailure) {
-            val err = fetchRes.exceptionOrNull() ?: Exception("Не удалось загрузить письма")
-            ru.mpei.assistant.util.AppLogger.e("EMAIL_REPO", "refreshEmails failed", err)
-            return Result.failure(err)
-        }
+            val knownIds = emailDao.getAllEmailIds().toSet()
+            val cachedEmails = readCachedEmails()
+            val fetchRes = mailClient.fetchEmailsPage(
+                login = login,
+                pass = pass,
+                beforeMessageNumber = null,
+                pageSize = pageSize,
+                cachedEmails = cachedEmails
+            )
+            if (fetchRes.isFailure) {
+                val err = fetchRes.exceptionOrNull() ?: Exception("Не удалось загрузить письма")
+                ru.mpei.assistant.util.AppLogger.e("EMAIL_REPO", "refreshEmails failed", err)
+                return Result.failure(err)
+            }
 
-        val pageResult = fetchRes.getOrThrow()
-        oldestLoadedMessageNumber = pageResult.oldestMessageNumber
-        _hasMoreOlder.value = pageResult.hasMore
+            val pageResult = fetchRes.getOrThrow()
 
-        val emails = pageResult.emails
-        ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "refreshEmails: received ${emails.size} emails from IMAP")
-        if (emails.isNotEmpty()) {
-            emailDao.insertEmails(emails.map { encryptEmail(it) })
-            ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "refreshEmails: saved ${emails.size} encrypted emails to database")
+            val emails = pageResult.emails
+            ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "refreshEmails: received ${emails.size} emails from IMAP")
+            if (emails.isNotEmpty()) {
+                emailDao.insertEmails(emails.map { encryptEmail(it) })
+                ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "refreshEmails: saved ${emails.size} encrypted emails to database")
 
-            // Минимизация кэша: удаляем тела устаревших писем (F-03)
-            pruneOldEmailBodies(keepCount = 50)
+                // Минимизация кэша: удаляем тела устаревших писем (F-03)
+                pruneOldEmailBodies(keepCount = 50)
 
-            // Если это фоновая проверка и уже были известные письма, уведомляем о новых
-            if (notifyOnNew && context != null && knownIds.isNotEmpty()) {
-                val newEmails = emails.filter { it.id !in knownIds && it.isUnread }
-                for (newEmail in newEmails) {
-                    NotificationHelper.showEmailNotification(
-                        context = context,
-                        id = (newEmail.id and 0x7FFFFFFF).toInt(),
-                        sender = newEmail.senderName,
-                        subject = newEmail.subject,
-                        snippet = newEmail.snippet
-                    )
+                // Если это фоновая проверка и уже были известные письма, уведомляем о новых
+                if (notifyOnNew && context != null && knownIds.isNotEmpty()) {
+                    val newEmails = emails.filter { it.id !in knownIds && it.isUnread }
+                    for (newEmail in newEmails) {
+                        NotificationHelper.showEmailNotification(
+                            context = context,
+                            id = (newEmail.id and 0x7FFFFFFF).toInt(),
+                            sender = newEmail.senderName,
+                            subject = newEmail.subject,
+                            snippet = newEmail.snippet
+                        )
+                    }
                 }
             }
-        }
 
-        return Result.success(emails)
+            oldestLoadedMessageNumber = pageResult.oldestMessageNumber
+            _hasMoreOlder.value = pageResult.hasMore
+
+            return Result.success(emails)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
     }
 
     suspend fun loadOlderEmails(pageSize: Int = 25): Result<Int> = syncMutex.withLock {
-        val login = sessionStorage.osepLogin
-        val pass = sessionStorage.osepPassword
-        if (login.isNullOrBlank() || pass.isNullOrBlank()) {
-            return Result.failure(Exception("Пользователь не авторизован в ОСЭП"))
-        }
-        if (!_hasMoreOlder.value) {
-            return Result.success(0)
-        }
-        val beforeMsg = oldestLoadedMessageNumber ?: return Result.success(0)
-        if (beforeMsg <= 1) {
-            _hasMoreOlder.value = false
-            return Result.success(0)
-        }
+        try {
+            val login = sessionStorage.osepLogin
+            val pass = sessionStorage.osepPassword
+            if (login.isNullOrBlank() || pass.isNullOrBlank()) {
+                return Result.failure(Exception("Пользователь не авторизован в ОСЭП"))
+            }
+            if (!_hasMoreOlder.value) {
+                return Result.success(0)
+            }
+            val beforeMsg = oldestLoadedMessageNumber ?: return Result.success(0)
+            if (beforeMsg <= 1) {
+                _hasMoreOlder.value = false
+                return Result.success(0)
+            }
 
-        val cachedEmails = emailDao.getAllEmailsList().map { decryptEmail(it) }.associateBy { it.id }
-        val fetchRes = mailClient.fetchEmailsPage(
-            login = login,
-            pass = pass,
-            beforeMessageNumber = beforeMsg,
-            pageSize = pageSize,
-            cachedEmails = cachedEmails
-        )
-        if (fetchRes.isFailure) {
-            val err = fetchRes.exceptionOrNull() ?: Exception("Не удалось загрузить старые письма")
-            ru.mpei.assistant.util.AppLogger.e("EMAIL_REPO", "loadOlderEmails failed", err)
-            return Result.failure(err)
+            val cachedEmails = readCachedEmails()
+            val fetchRes = mailClient.fetchEmailsPage(
+                login = login,
+                pass = pass,
+                beforeMessageNumber = beforeMsg,
+                pageSize = pageSize,
+                cachedEmails = cachedEmails
+            )
+            if (fetchRes.isFailure) {
+                val err = fetchRes.exceptionOrNull() ?: Exception("Не удалось загрузить старые письма")
+                ru.mpei.assistant.util.AppLogger.e("EMAIL_REPO", "loadOlderEmails failed", err)
+                return Result.failure(err)
+            }
+
+            val pageResult = fetchRes.getOrThrow()
+
+            val emails = pageResult.emails
+            ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "loadOlderEmails: received ${emails.size} older emails from IMAP")
+            if (emails.isNotEmpty()) {
+                emailDao.insertEmails(emails.map { encryptEmail(it) })
+                pruneOldEmailBodies(keepCount = 50)
+            }
+
+            oldestLoadedMessageNumber = pageResult.oldestMessageNumber
+            _hasMoreOlder.value = pageResult.hasMore
+
+            return Result.success(emails.size)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return Result.failure(e)
         }
-
-        val pageResult = fetchRes.getOrThrow()
-        oldestLoadedMessageNumber = pageResult.oldestMessageNumber
-        _hasMoreOlder.value = pageResult.hasMore
-
-        val emails = pageResult.emails
-        ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "loadOlderEmails: received ${emails.size} older emails from IMAP")
-        if (emails.isNotEmpty()) {
-            emailDao.insertEmails(emails.map { encryptEmail(it) })
-            pruneOldEmailBodies(keepCount = 50)
-        }
-
-        return Result.success(emails.size)
     }
 
     /**
@@ -284,11 +324,15 @@ class EmailRepository(
                         emailDao.insertEmails(listOf(encryptEmail(res.getOrThrow())))
                         ru.mpei.assistant.util.AppLogger.i("EMAIL_REPO", "Successfully repaired blank email UID=${blank.id}")
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     ru.mpei.assistant.util.AppLogger.w("EMAIL_REPO", "Failed repairing email UID=${blank.id}: ${e.message}")
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
             ru.mpei.assistant.util.AppLogger.w("EMAIL_REPO", "repairBlankEmails warning: ${e.message}")
         }
     }
@@ -303,7 +347,13 @@ class EmailRepository(
         val res = mailClient.fetchMessageByUid(login, pass, uid)
         if (res.isSuccess) {
             val email = res.getOrThrow()
-            emailDao.insertEmails(listOf(encryptEmail(email)))
+            try {
+                emailDao.insertEmails(listOf(encryptEmail(email)))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return Result.failure(e)
+            }
             return Result.success(email)
         }
         return res

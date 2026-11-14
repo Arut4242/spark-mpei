@@ -1,5 +1,6 @@
 package ru.mpei.assistant.ui.email
 
+import kotlinx.coroutines.flow.collect
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -135,6 +136,13 @@ fun EmailScreen(
 ) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(emailRepository) {
+        emailRepository.cacheReadError.collect { error ->
+            if (error != null) {
+                snackbarHostState.showSnackbar("Не удалось прочитать сохранённые данные. Повторите загрузку.")
+            }
+        }
+    }
     var isAuthorized by remember { mutableStateOf(emailRepository.isAuthorized()) }
     val emails by emailRepository.getEmailsFlow().collectAsState(initial = emptyList())
     val unreadCount by emailRepository.getUnreadCountFlow().collectAsState(initial = 0)

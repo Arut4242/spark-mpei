@@ -1,5 +1,14 @@
 package ru.mpei.assistant
 
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -50,7 +59,23 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val database = AppDatabase.getInstance(this)
+        setContent { MaterialTheme { Surface { Text("Открытие защищённой базы…") } } }
+        lifecycleScope.launch {
+        val database = try {
+            withContext(Dispatchers.IO) { AppDatabase.getInstance(applicationContext) }
+        } catch (e: AppDatabase.Companion.DatabaseOpenException) {
+            setContent {
+                MaterialTheme {
+                    Surface {
+                        Column {
+                            Text("Не удалось открыть защищённую базу. Данные не удалены.")
+                            Button(onClick = { recreate() }) { Text("Повторить") }
+                        }
+                    }
+                }
+            }
+            return@launch
+        }
         val sessionStorage = SessionStorage(this)
         val scheduleApi = MpeiScheduleApi.create()
         val barsClient = BarsWebClient(sessionStorage)
@@ -111,6 +136,7 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
+        }
         }
     }
 

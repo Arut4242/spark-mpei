@@ -23,7 +23,12 @@ class BarsCheckWorker(
 
     override suspend fun doWork(): Result {
         val storage = SessionStorage(context)
-        val db = AppDatabase.getInstance(context)
+        val db = try {
+            AppDatabase.getInstance(context)
+        } catch (e: AppDatabase.Companion.DatabaseOpenException) {
+            ru.mpei.assistant.util.AppLogger.w("DATABASE", "Защищённая база недоступна; операция отложена")
+            return Result.retry()
+        }
 
         // Silently update schedule in background for selected group
         val selectedGroupId = storage.selectedGroupId
@@ -57,57 +62,69 @@ class BarsCheckWorker(
                     isAuthError = true
                 }
             } else {
-                anySuccess = true
-                val html = htmlResult.getOrThrow()
-                val newSubjects = BarsHtmlParser.parseSubjects(html, "Текущий семестр")
+                try {
+                    val html = htmlResult.getOrThrow()
+                    val newSubjects = BarsHtmlParser.parseSubjects(html, "Текущий семестр")
 
-                // Читаем предыдущие оценки из БД
-                val oldSubjects = db.barsDao().getAllSubjectsList()
-                val oldScoresMap = mutableMapOf<String, String?>()
-                for (sub in oldSubjects) {
-                    try {
-                        val decryptedJson = KeystoreCrypto.decrypt(sub.controlMeasuresJson) ?: sub.controlMeasuresJson
-                        val measures: List<ControlMeasure> = json.decodeFromString(decryptedJson)
-                        for (m in measures) {
-                            if (!m.grade.isNullOrBlank()) {
-                                oldScoresMap["${sub.name}_${m.name}"] = m.grade
+                    // Читаем предыдущие оценки из БД
+                    val oldSubjects = db.barsDao().getAllSubjectsList()
+                    val oldScoresMap = mutableMapOf<String, String?>()
+                    var canCompareGrades = true
+                    for (sub in oldSubjects) {
+                        try {
+                            val decryptedJson = checkNotNull(KeystoreCrypto.decrypt(sub.controlMeasuresJson))
+                            val measures: List<ControlMeasure> = json.decodeFromString(decryptedJson)
+                            for (m in measures) {
+                                if (!m.grade.isNullOrBlank()) {
+                                    oldScoresMap["${sub.name}_${m.name}"] = m.grade
+                                }
                             }
-                        }
-                    } catch (_: Exception) {}
-                }
-
-                // Сравниваем изменения и отправляем уведомления о новых оценках
-                for (newSub in newSubjects) {
-                    val newMeasures: List<ControlMeasure> = try {
-                        json.decodeFromString(newSub.controlMeasuresJson)
-                    } catch (e: Exception) {
-                        emptyList()
-                    }
-
-                    for (measure in newMeasures) {
-                        if (!measure.grade.isNullOrBlank()) {
-                            val key = "${newSub.name}_${measure.name}"
-                            val oldGrade = oldScoresMap[key]
-                            if (oldGrade == null && oldScoresMap.isNotEmpty()) {
-                                NotificationHelper.showGradeNotification(
-                                    context = context,
-                                    id = key.hashCode(),
-                                    title = "Новая оценка: ${newSub.name}",
-                                    text = "${measure.name}: получена оценка ${measure.grade}"
-                                )
-                            }
+                        } catch (e: Exception) {
+                            canCompareGrades = false
+                            ru.mpei.assistant.util.AppLogger.e("BARS_CHECK_WORKER", "Cannot read previous grades", e)
                         }
                     }
-                }
 
-                if (newSubjects.isNotEmpty()) {
-                    val encryptedSubjects = newSubjects.map {
-                        val encMeasures = if (it.controlMeasuresJson.isNotEmpty() && it.controlMeasuresJson != "[]") {
-                            KeystoreCrypto.encrypt(it.controlMeasuresJson) ?: it.controlMeasuresJson
-                        } else it.controlMeasuresJson
-                        it.copy(controlMeasuresJson = encMeasures)
+                    // Сравниваем изменения и отправляем уведомления о новых оценках
+                    if (newSubjects.isNotEmpty()) {
+                        val encryptedSubjects = newSubjects.map {
+                            val encMeasures = if (it.controlMeasuresJson.isNotEmpty() && it.controlMeasuresJson != "[]") {
+                                checkNotNull(KeystoreCrypto.encrypt(it.controlMeasuresJson))
+                            } else it.controlMeasuresJson
+                            it.copy(controlMeasuresJson = encMeasures)
+                        }
+                        db.barsDao().insertAll(encryptedSubjects)
                     }
-                    db.barsDao().insertAll(encryptedSubjects)
+                    anySuccess = true
+                    for (newSub in newSubjects) {
+                        val newMeasures: List<ControlMeasure> = try {
+                            json.decodeFromString(newSub.controlMeasuresJson)
+                        } catch (e: Exception) {
+                            emptyList()
+                        }
+
+                        for (measure in newMeasures) {
+                            if (!measure.grade.isNullOrBlank()) {
+                                val key = "${newSub.name}_${measure.name}"
+                                val oldGrade = oldScoresMap[key]
+                                if (canCompareGrades && oldGrade == null && oldScoresMap.isNotEmpty()) {
+                                    NotificationHelper.showGradeNotification(
+                                        context = context,
+                                        id = key.hashCode(),
+                                        title = "Новая оценка: ${newSub.name}",
+                                        text = "${measure.name}: получена оценка ${measure.grade}"
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    anyFailure = true
+                    ru.mpei.assistant.util.AppLogger.e("BARS_CHECK_WORKER", "Grade sync failed", e)
                 }
             }
         }
