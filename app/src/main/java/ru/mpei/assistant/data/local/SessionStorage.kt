@@ -179,7 +179,7 @@ open class SessionStorage internal constructor(
     }
 
     var isFavoritesBarExpanded: Boolean
-        get() = sharedPreferences.getBoolean(KEY_FAVORITES_BAR_EXPANDED, true)
+        get() = sharedPreferences.getBoolean(KEY_FAVORITES_BAR_EXPANDED, false)
         set(value) = sharedPreferences.edit().putBoolean(KEY_FAVORITES_BAR_EXPANDED, value).apply()
 
     val isOsepAuthorized: Boolean

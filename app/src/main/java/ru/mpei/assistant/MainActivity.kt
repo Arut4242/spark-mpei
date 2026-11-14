@@ -91,7 +91,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var currentThemeMode by remember { mutableStateOf(sessionStorage.appThemeMode) }
-            MpeiTheme(themeMode = currentThemeMode) {
+           MpeiTheme(
+                    themeMode = currentThemeMode,
+                    window = this@MainActivity.window
+                ) {
                 MainScreen(
                     scheduleRepository = scheduleRepository,
                     barsRepository = barsRepository,
