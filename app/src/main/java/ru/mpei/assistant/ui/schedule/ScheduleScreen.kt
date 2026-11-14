@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,7 +50,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.filled.Today
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -255,9 +256,8 @@ fun ScheduleScreen(
     // Horizontal pager for swiping between Monday..Saturday (pages 0..5)
     val pagerState = rememberPagerState(initialPage = initialWeekAndDay.second) { 6 }
 
-    // Synchronous derived states for day selection and today button visibility
+    // Synchronous derived state for day selection
     val selectedDayIndex by remember { derivedStateOf { pagerState.currentPage } }
-    val showTodayButton by remember { derivedStateOf { weekOffset != 0 } }
 
     // When lessons are loaded from database, jump to the nearest upcoming lesson
     var hasAppliedUpcomingJump by remember { mutableStateOf(false) }
@@ -291,7 +291,6 @@ fun ScheduleScreen(
     // Formatters
     val dateApiFormat = remember { SimpleDateFormat("yyyy.MM.dd", Locale.getDefault()) }
     val dayNumberFormat = remember { SimpleDateFormat("d", Locale.getDefault()) }
-    val monthTitleFormat = remember { SimpleDateFormat("d MMMM", Locale("ru")) }
 
     // Compute Monday of the selected week
     val currentMonday = remember(weekOffset) {
@@ -702,9 +701,6 @@ fun ScheduleScreen(
                                         dayCal
                                     }
                                 }
-                                val pageStartStr = remember(pageWeekDays) { monthTitleFormat.format(pageWeekDays.first().time) }
-                                val pageEndStr = remember(pageWeekDays) { monthTitleFormat.format(pageWeekDays.last().time) }
-                                val pageRangeTitle = "$pageStartStr — $pageEndStr"
                                 val pageWeekNumber = remember(pageMonday) { getSemesterWeekNumber(pageMonday) }
                                 val pageDayChips = remember(pageWeekDays, todayString) {
                                     pageWeekDays.mapIndexed { index, dayCal ->
@@ -718,32 +714,20 @@ fun ScheduleScreen(
                                 }
 
                                 Column(modifier = Modifier.padding(horizontal = 12.dp)) {
-                                    // Week title & semester week number (centered, padded to avoid fixed buttons)
+                                    // Semester week number, padded to avoid fixed navigation buttons
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 44.dp),
+                                            .heightIn(min = 44.dp)
+                                            .padding(horizontal = 84.dp),
+                                        verticalArrangement = Arrangement.Center,
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
-                                            text = pageRangeTitle,
+                                            text = "$pageWeekNumber неделя",
                                             style = MaterialTheme.typography.titleMedium,
                                             fontWeight = FontWeight.SemiBold
                                         )
-                                        Box(
-                                            modifier = Modifier
-                                                .padding(top = 3.dp)
-                                                .clip(ApplePillShape)
-                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
-                                                .padding(horizontal = 10.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = "$pageWeekNumber неделя",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.primary,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                        }
                                     }
 
                                     Spacer(modifier = Modifier.height(10.dp))
@@ -794,6 +778,32 @@ fun ScheduleScreen(
                                 )
                             }
 
+                            // Return to the current week and day.
+                            Box(
+                                modifier = Modifier
+                                    .padding(start = 52.dp, top = 4.dp)
+                                    .align(Alignment.TopStart)
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                    .appleClickable {
+                                        scope.launch {
+                                            weekPagerState.animateScrollToPage(BASE_WEEK_PAGE)
+                                            val currentDay = Calendar.getInstance().get(Calendar.DAY_OF_WEEK)
+                                            val targetIdx = if (currentDay in 2..7) currentDay - 2 else 0
+                                            pagerState.animateScrollToPage(targetIdx)
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Home,
+                                    contentDescription = "Вернуться к сегодня",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
                             // Fixed Right Arrow Button (never moves on swipe)
                             Box(
                                 modifier = Modifier
@@ -818,35 +828,6 @@ fun ScheduleScreen(
                             }
                         }
 
-                        // Quick "Today" jump button with AnimatedVisibility
-                        AnimatedVisibility(
-                            visible = showTodayButton,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically(),
-                            modifier = Modifier.align(Alignment.CenterHorizontally)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(top = 6.dp)
-                                    .clip(ApplePillShape)
-                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
-                                    .appleClickable {
-                                        scope.launch {
-                                            weekPagerState.animateScrollToPage(BASE_WEEK_PAGE)
-                                            val currentDay = todayCal.get(Calendar.DAY_OF_WEEK)
-                                            val targetIdx = if (currentDay in 2..7) currentDay - 2 else 0
-                                            pagerState.animateScrollToPage(targetIdx)
-                                        }
-                                    }
-                                    .padding(horizontal = 14.dp, vertical = 5.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Today, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(13.dp))
-                                    Spacer(modifier = Modifier.width(5.dp))
-                                    Text("Вернуться к сегодня", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
-                                }
-                            }
-                        }
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)

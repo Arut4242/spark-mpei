@@ -35,11 +35,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -180,18 +177,6 @@ fun MainScreen(
                                         Icon(screen.icon, contentDescription = screen.title)
                                     }
                                 },
-                                label = {
-                                    Text(
-                                        text = screen.title,
-                                        fontSize = 10.sp,
-                                        letterSpacing = (-0.2).sp,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Ellipsis,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                                    )
-                                },
-                                alwaysShowLabel = true,
                                 selected = selected,
                                 onClick = onClick,
                                 colors = NavigationBarItemDefaults.colors(

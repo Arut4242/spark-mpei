@@ -48,7 +48,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
@@ -68,6 +67,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import ru.mpei.assistant.data.network.cleanHtmlToPlainText
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -153,7 +153,6 @@ fun EmailScreen(
     val unreadCount by emailRepository.getUnreadCountFlow().collectAsState(initial = 0)
     var isRefreshing by remember { mutableStateOf(false) }
     var selectedEmail by remember { mutableStateOf<EmailMessage?>(null) }
-    var showLogoutDialog by remember { mutableStateOf(false) }
 
     val hasMoreOlder by emailRepository.hasMoreOlderFlow.collectAsState()
     var isLoadingOlder by remember { mutableStateOf(false) }
@@ -206,6 +205,25 @@ fun EmailScreen(
         }
     }
 
+    val refreshEmails: () -> Unit = {
+        if (isAuthorized && !isRefreshing && !isLoadingOlder) {
+            isRefreshing = true
+            loadOlderError = null
+            scope.launch {
+                val res = try {
+                    emailRepository.refreshEmails()
+                } finally {
+                    isRefreshing = false
+                }
+                if (res.isFailure) {
+                    snackbarHostState.showSnackbar(
+                        res.exceptionOrNull()?.localizedMessage ?: "Ошибка обновления почты"
+                    )
+                }
+            }
+        }
+    }
+
     // Full screen detail view when an email is selected
     if (selectedEmail != null) {
         BackHandler(enabled = true) {
@@ -223,69 +241,7 @@ fun EmailScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "Почта ОСЭП",
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (isAuthorized && unreadCount > 0) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(ApplePillShape)
-                                    .background(AppleBlue)
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = "$unreadCount",
-                                    color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                },
-                actions = {
-                    if (isAuthorized) {
-                        IconButton(
-                            onClick = {
-                                scope.launch {
-                                    isRefreshing = true
-                                    loadOlderError = null
-                                    val res = emailRepository.refreshEmails()
-                                    isRefreshing = false
-                                    if (res.isFailure) {
-                                        snackbarHostState.showSnackbar(
-                                            res.exceptionOrNull()?.localizedMessage ?: "Ошибка обновления почты"
-                                        )
-                                    }
-                                }
-                            },
-                            enabled = !isRefreshing
-                        ) {
-                            if (isRefreshing) {
-                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(Icons.Default.Refresh, contentDescription = "Обновить")
-                            }
-                        }
-                        IconButton(onClick = { showLogoutDialog = true }) {
-                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Выйти")
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        }
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -330,277 +286,284 @@ fun EmailScreen(
                     groupEmailsByDate(filteredEmails)
                 }
 
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Search Bar (как в Outlook "Поиск в почте и среди людей")
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            placeholder = {
-                                Text(
-                                    "Поиск в почте и среди людей",
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.Search,
-                                    contentDescription = "Поиск",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            },
-                            trailingIcon = {
-                                if (searchQuery.isNotEmpty()) {
-                                    IconButton(onClick = { searchQuery = "" }) {
-                                        Icon(
-                                            Icons.Default.Close,
-                                            contentDescription = "Очистить",
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                            },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                focusedBorderColor = AppleBlue,
-                                unfocusedBorderColor = Color.Transparent
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                        )
-                    }
-
-                    // Filter tabs ("Все", "Непрочтенные", "С вложениями", "Важные")
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        EmailFilterTab.values().forEach { tab ->
-                            val isSelected = selectedTab == tab
-                            val chipBg = if (isSelected) AppleBlue else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                            val chipTextColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-
-                            Box(
-                                modifier = Modifier
-                                    .clip(ApplePillShape)
-                                    .background(chipBg)
-                                    .clickable { selectedTab = tab }
-                                    .padding(horizontal = 14.dp, vertical = 6.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    if (tab == EmailFilterTab.WITH_ATTACHMENTS) {
-                                        Icon(
-                                            Icons.Default.AttachFile,
-                                            contentDescription = null,
-                                            tint = chipTextColor,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    } else if (tab == EmailFilterTab.URGENT) {
-                                        Icon(
-                                            Icons.Default.PriorityHigh,
-                                            contentDescription = null,
-                                            tint = chipTextColor,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                    Text(
-                                        text = tab.title,
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        color = chipTextColor
-                                    )
-                                    if (tab == EmailFilterTab.UNREAD && unreadCount > 0 && !isSelected) {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .background(AppleBlue)
-                                                .size(6.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    if (filteredEmails.isEmpty() && isRefreshing) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator()
-                        }
-                    } else if (filteredEmails.isEmpty()) {
+                PullToRefreshBox(
+                    isRefreshing = isRefreshing,
+                    onRefresh = refreshEmails,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // Search Bar (как в Outlook "Поиск в почте и среди людей")
                         Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .padding(32.dp),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = Icons.Default.Email,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(56.dp)
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = if (searchQuery.isNotBlank()) "Ничего не найдено" else "Писем пока нет",
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = if (searchQuery.isNotBlank()) "Попробуйте изменить поисковый запрос" else "Потяните для обновления или нажмите значок синхронизации",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                )
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                placeholder = {
+                                    Text(
+                                        "Поиск в почте и среди людей",
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Search,
+                                        contentDescription = "Поиск",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                trailingIcon = {
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { searchQuery = "" }) {
+                                            Icon(
+                                                Icons.Default.Close,
+                                                contentDescription = "Очистить",
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                    focusedBorderColor = AppleBlue,
+                                    unfocusedBorderColor = Color.Transparent
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(50.dp)
+                            )
+                        }
+
+                        // Filter tabs ("Все", "Непрочтенные", "С вложениями", "Важные")
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            EmailFilterTab.values().forEach { tab ->
+                                val isSelected = selectedTab == tab
+                                val chipBg = if (isSelected) AppleBlue else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                val chipTextColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+
+                                Box(
+                                    modifier = Modifier
+                                        .clip(ApplePillShape)
+                                        .background(chipBg)
+                                        .clickable { selectedTab = tab }
+                                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        if (tab == EmailFilterTab.WITH_ATTACHMENTS) {
+                                            Icon(
+                                                Icons.Default.AttachFile,
+                                                contentDescription = null,
+                                                tint = chipTextColor,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        } else if (tab == EmailFilterTab.URGENT) {
+                                            Icon(
+                                                Icons.Default.PriorityHigh,
+                                                contentDescription = null,
+                                                tint = chipTextColor,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = tab.title,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = chipTextColor
+                                        )
+                                        if (tab == EmailFilterTab.UNREAD && unreadCount > 0 && !isSelected) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .background(AppleBlue)
+                                                    .size(6.dp)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            state = listState,
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            groupedEmails.forEach { (dateGroupTitle, groupList) ->
-                                item(key = "group_header_$dateGroupTitle") {
-                                    Text(
-                                        text = dateGroupTitle,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = AppleBlue,
-                                        modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 2.dp)
-                                    )
-                                }
 
-                                items(
-                                    items = groupList,
-                                    key = { it.id }
-                                ) { email ->
-                                    EmailListItemCard(
-                                        email = email,
-                                        onClick = {
-                                            selectedEmail = email
-                                            if (email.isUnread) {
-                                                scope.launch { emailRepository.markAsRead(email.id) }
-                                            }
-                                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        if (filteredEmails.isEmpty() && isRefreshing) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator()
+                            }
+                        } else if (filteredEmails.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        imageVector = Icons.Default.Email,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                        modifier = Modifier.size(56.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = if (searchQuery.isNotBlank()) "Ничего не найдено" else "Писем пока нет",
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = if (searchQuery.isNotBlank()) "Попробуйте изменить поисковый запрос" else "Потяните вниз для обновления",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                     )
                                 }
                             }
-
-                            if (isLoadingOlder) {
-                                item(key = "footer_loading_older") {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 12.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(16.dp),
-                                                strokeWidth = 2.dp,
-                                                color = AppleBlue
-                                            )
-                                            Text(
-                                                text = "Загрузка предыдущих писем...",
-                                                fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            } else if (loadOlderError != null) {
-                                item(key = "footer_error_older") {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 8.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        TextButton(
-                                            onClick = {
-                                                scope.launch {
-                                                    loadOlderError = null
-                                                    isLoadingOlder = true
-                                                    val res = emailRepository.loadOlderEmails()
-                                                    isLoadingOlder = false
-                                                    if (res.isFailure) {
-                                                        loadOlderError = res.exceptionOrNull()?.localizedMessage ?: "Ошибка загрузки"
-                                                    }
-                                                }
-                                            }
-                                        ) {
-                                            Text(
-                                                text = "Не удалось загрузить старые письма. Повторить",
-                                                fontSize = 12.sp,
-                                                color = AppleBlue
-                                            )
-                                        }
-                                    }
-                                }
-                            } else if (hasMoreOlder && filteredEmails.isNotEmpty() && searchQuery.isBlank() && selectedTab == EmailFilterTab.ALL && emailRepository.oldestLoadedMessageNumber != null) {
-                                item(key = "footer_load_more_button") {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 6.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        TextButton(
-                                            onClick = {
-                                                scope.launch {
-                                                    loadOlderError = null
-                                                    isLoadingOlder = true
-                                                    val res = emailRepository.loadOlderEmails()
-                                                    isLoadingOlder = false
-                                                    if (res.isFailure) {
-                                                        loadOlderError = res.exceptionOrNull()?.localizedMessage ?: "Ошибка загрузки"
-                                                    }
-                                                }
-                                            }
-                                        ) {
-                                            Text(
-                                                text = "Загрузить более ранние письма",
-                                                fontSize = 12.sp,
-                                                color = AppleBlue
-                                            )
-                                        }
-                                    }
-                                }
-                            } else if (!hasMoreOlder && filteredEmails.isNotEmpty() && searchQuery.isBlank() && selectedTab == EmailFilterTab.ALL) {
-                                item(key = "footer_all_loaded") {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 12.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                state = listState,
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                groupedEmails.forEach { (dateGroupTitle, groupList) ->
+                                    item(key = "group_header_$dateGroupTitle") {
                                         Text(
-                                            text = "Все письма загружены",
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                            text = dateGroupTitle,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = AppleBlue,
+                                            modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 2.dp)
                                         )
+                                    }
+
+                                    items(
+                                        items = groupList,
+                                        key = { it.id }
+                                    ) { email ->
+                                        EmailListItemCard(
+                                            email = email,
+                                            onClick = {
+                                                selectedEmail = email
+                                                if (email.isUnread) {
+                                                    scope.launch { emailRepository.markAsRead(email.id) }
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+
+                                if (isLoadingOlder) {
+                                    item(key = "footer_loading_older") {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 12.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(16.dp),
+                                                    strokeWidth = 2.dp,
+                                                    color = AppleBlue
+                                                )
+                                                Text(
+                                                    text = "Загрузка предыдущих писем...",
+                                                    fontSize = 12.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (loadOlderError != null) {
+                                    item(key = "footer_error_older") {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 8.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            TextButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        loadOlderError = null
+                                                        isLoadingOlder = true
+                                                        val res = emailRepository.loadOlderEmails()
+                                                        isLoadingOlder = false
+                                                        if (res.isFailure) {
+                                                            loadOlderError = res.exceptionOrNull()?.localizedMessage ?: "Ошибка загрузки"
+                                                        }
+                                                    }
+                                                }
+                                            ) {
+                                                Text(
+                                                    text = "Не удалось загрузить старые письма. Повторить",
+                                                    fontSize = 12.sp,
+                                                    color = AppleBlue
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (hasMoreOlder && filteredEmails.isNotEmpty() && searchQuery.isBlank() && selectedTab == EmailFilterTab.ALL && emailRepository.oldestLoadedMessageNumber != null) {
+                                    item(key = "footer_load_more_button") {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 6.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            TextButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        loadOlderError = null
+                                                        isLoadingOlder = true
+                                                        val res = emailRepository.loadOlderEmails()
+                                                        isLoadingOlder = false
+                                                        if (res.isFailure) {
+                                                            loadOlderError = res.exceptionOrNull()?.localizedMessage ?: "Ошибка загрузки"
+                                                        }
+                                                    }
+                                                }
+                                            ) {
+                                                Text(
+                                                    text = "Загрузить более ранние письма",
+                                                    fontSize = 12.sp,
+                                                    color = AppleBlue
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (!hasMoreOlder && filteredEmails.isNotEmpty() && searchQuery.isBlank() && selectedTab == EmailFilterTab.ALL) {
+                                    item(key = "footer_all_loaded") {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 12.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = "Все письма загружены",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -611,31 +574,6 @@ fun EmailScreen(
         }
     }
 
-    if (showLogoutDialog) {
-        AlertDialog(
-            onDismissRequest = { showLogoutDialog = false },
-            title = { Text("Выход из почты ОСЭП") },
-            text = { Text("Вы действительно хотите выйти? Кэшированные письма, скачанные вложения и учетные данные будут удалены с устройства.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showLogoutDialog = false
-                        scope.launch {
-                            emailRepository.logout(context)
-                            isAuthorized = false
-                        }
-                    }
-                ) {
-                    Text("Выйти", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLogoutDialog = false }) {
-                    Text("Отмена")
-                }
-            }
-        )
-    }
 }
 
 @Composable
