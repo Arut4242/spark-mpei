@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.EventBusy
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.HorizontalDivider
@@ -35,11 +36,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -57,6 +55,7 @@ import ru.mpei.assistant.data.repository.UpdateRepository
 import ru.mpei.assistant.ui.absences.AbsencesScreen
 import ru.mpei.assistant.ui.bars.BarsScreen
 import ru.mpei.assistant.ui.email.EmailScreen
+import ru.mpei.assistant.ui.headman.HeadmanScreen
 import ru.mpei.assistant.ui.schedule.ScheduleScreen
 import ru.mpei.assistant.ui.settings.SettingsScreen
 import ru.mpei.assistant.ui.theme.AppleBlue
@@ -67,6 +66,7 @@ import java.io.File
 sealed class Screen(val route: String, val title: String, val icon: ImageVector) {
     data object Schedule : Screen("schedule", "Расписание", Icons.Default.DateRange)
     data object Bars : Screen("bars", "БАРС", Icons.Default.School)
+    data object Headman : Screen("headman", "Кабинет старосты", Icons.Default.Groups)
     data object Email : Screen("email", "Почта", Icons.Default.Email)
     data object Absences : Screen("absences", "Пропуски", Icons.Default.EventBusy)
     data object Settings : Screen("settings", "Настройки", Icons.Default.Settings)
@@ -98,6 +98,31 @@ fun MainScreen(
     val currentRoute = navBackStackEntry?.destination?.route
     val unreadEmailsCount by emailRepository.getUnreadCountFlow().collectAsState(initial = 0)
     val scope = rememberCoroutineScope()
+    val headmanGroup by barsRepository.headman.group.collectAsState()
+    val barsAccountRevision by sessionStorage.barsAccountRevision.collectAsState()
+    val navigationItems = remember(headmanGroup) {
+        NAVIGATION_ITEMS.toMutableList().apply {
+            if (headmanGroup != null) add(indexOf(Screen.Bars) + 1, Screen.Headman)
+        }
+    }
+
+    LaunchedEffect(barsAccountRevision) {
+        barsRepository.headman.reset()
+        if (barsRepository.isAuthorized()) barsRepository.headman.discover()
+    }
+    LaunchedEffect(currentRoute) {
+        if (currentRoute == Screen.Bars.route && barsRepository.isAuthorized() && headmanGroup == null) {
+            barsRepository.headman.discover()
+        }
+    }
+    LaunchedEffect(headmanGroup, currentRoute) {
+        if (headmanGroup == null && currentRoute == Screen.Headman.route) {
+            navController.navigate(Screen.Bars.route) {
+                popUpTo(Screen.Headman.route) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+    }
 
     var updateState by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
 
@@ -156,7 +181,7 @@ fun MainScreen(
                         containerColor = MaterialTheme.colorScheme.surface,
                         tonalElevation = 0.dp
                     ) {
-                        NAVIGATION_ITEMS.forEach { screen ->
+                        navigationItems.forEach { screen ->
                             val selected = currentRoute == screen.route
                             val onClick = remember(screen, onNavigateToDestination) {
                                 { onNavigateToDestination(screen.route) }
@@ -180,18 +205,6 @@ fun MainScreen(
                                         Icon(screen.icon, contentDescription = screen.title)
                                     }
                                 },
-                                label = {
-                                    Text(
-                                        text = screen.title,
-                                        fontSize = 10.sp,
-                                        letterSpacing = (-0.2).sp,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Ellipsis,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                                    )
-                                },
-                                alwaysShowLabel = true,
                                 selected = selected,
                                 onClick = onClick,
                                 colors = NavigationBarItemDefaults.colors(
@@ -232,6 +245,11 @@ fun MainScreen(
                 EmailScreen(
                     emailRepository = emailRepository
                 )
+            }
+            composable(Screen.Headman.route) {
+                if (headmanGroup != null) {
+                    HeadmanScreen(barsRepository.headman)
+                }
             }
             composable(Screen.Absences.route) {
                 AbsencesScreen(

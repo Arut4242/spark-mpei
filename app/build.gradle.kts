@@ -120,6 +120,8 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
 
     // Local DB - Room
+    implementation("net.zetetic:sqlcipher-android:4.10.0@aar")
+    implementation("androidx.sqlite:sqlite:2.4.0")
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
@@ -131,6 +133,8 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.jsoup)
+    // Legacy Excel reports returned by BARS (.xls); .xlsx is read with the platform ZIP API.
+    implementation("net.sourceforge.jexcelapi:jxl:2.6.12")
 
     // Security & Encrypted Preferences
     implementation(libs.androidx.security.crypto)
@@ -145,4 +149,6 @@ dependencies {
 
     // Unit Testing
     testImplementation(libs.junit)
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

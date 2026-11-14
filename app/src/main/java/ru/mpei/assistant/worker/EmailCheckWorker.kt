@@ -25,7 +25,12 @@ class EmailCheckWorker(
 
     override suspend fun doWork(): Result {
         val storage = SessionStorage(context)
-        val db = AppDatabase.getInstance(context)
+        val db = try {
+            AppDatabase.getInstance(context)
+        } catch (e: AppDatabase.Companion.DatabaseOpenException) {
+            ru.mpei.assistant.util.AppLogger.w("DATABASE", "Защищённая база недоступна; операция отложена")
+            return Result.retry()
+        }
 
         AppLogger.i("EMAIL_WORKER", "Запуск проверки почты ОСЭП МЭИ (интервал 30 мин)...")
         var shouldReschedule = true

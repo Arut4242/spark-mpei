@@ -34,6 +34,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,7 +44,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -129,6 +129,13 @@ fun AbsencesScreen(
 ) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(barsRepository) {
+        barsRepository?.cacheReadError?.collect { error ->
+            if (error != null) {
+                snackbarHostState.showSnackbar("Не удалось прочитать сохранённые данные. Повторите загрузку.")
+            }
+        }
+    }
     val absences by absenceRepository.getAbsencesFlow().collectAsState(initial = emptyList())
     val barsSubjects by (barsRepository?.getSubjectsFlow() ?: flowOf(emptyList())).collectAsState(initial = emptyList())
 
@@ -138,10 +145,28 @@ fun AbsencesScreen(
 
     var showRuleInfoDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        if (absenceRepository.isAuthorizedInBars()) {
-            absenceRepository.syncWithBarsAndSchedule()
+    var isRefreshing by remember { mutableStateOf(false) }
+    val refreshAbsences: () -> Unit = {
+        if (!isRefreshing) {
+            isRefreshing = true
+            scope.launch {
+                val res = try {
+                    absenceRepository.syncWithBarsAndSchedule()
+                } finally {
+                    isRefreshing = false
+                }
+                if (res.isSuccess) {
+                    snackbarHostState.showSnackbar("Данные о пропусках обновлены из БАРС")
+                } else {
+                    val msg = res.exceptionOrNull()?.message ?: "Ошибка синхронизации"
+                    snackbarHostState.showSnackbar("Ошибка: $msg")
+                }
+            }
         }
+    }
+
+    LaunchedEffect(Unit) {
+        if (absenceRepository.isAuthorizedInBars()) refreshAbsences()
     }
 
     // Statistics (only for regular exam/credit subjects with automat condition)
@@ -157,78 +182,48 @@ fun AbsencesScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        topBar = {
-            TopAppBar(
-                title = { Text("Пропуски и автомат") },
-                actions = {
-                    IconButton(
-                        onClick = {
-                            scope.launch {
-                                val res = absenceRepository.syncWithBarsAndSchedule()
-                                if (res.isSuccess) {
-                                    snackbarHostState.showSnackbar("Данные о пропусках обновлены из БАРС")
-                                } else {
-                                    val msg = res.exceptionOrNull()?.message ?: "Ошибка синхронизации"
-                                    snackbarHostState.showSnackbar("Ошибка: $msg")
-                                }
-                            }
-                        }
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Синхронизировать с БАРС")
-                    }
-                    IconButton(onClick = { showRuleInfoDialog = true }) {
-                        Icon(Icons.AutoMirrored.Filled.HelpOutline, contentDescription = "Правило 6,25% МЭИ")
-                    }
-                }
-            )
-        },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = refreshAbsences,
+            modifier = Modifier.fillMaxSize().padding(innerPadding)
         ) {
-            // Rule Banner Card
-            item(key = "rule_banner", contentType = "Banner") {
-                RuleBannerCard(
-                    totalSubjects = totalExamSubjects,
-                    greenCount = greenCount,
-                    warningCount = warningCount,
-                    redCount = redCount,
-                    onInfoClick = { showRuleInfoDialog = true }
-                )
-            }
-
-            if (absences.isEmpty()) {
-                item(key = "empty_state", contentType = "Empty") {
-                    EmptyAbsencesCard(
-                        onSyncClick = {
-                            scope.launch {
-                                val res = absenceRepository.syncWithBarsAndSchedule()
-                                if (res.isSuccess) {
-                                    snackbarHostState.showSnackbar("Данные о пропусках обновлены из БАРС")
-                                } else {
-                                    val msg = res.exceptionOrNull()?.message ?: "Ошибка синхронизации"
-                                    snackbarHostState.showSnackbar("Ошибка: $msg")
-                                }
-                            }
-                        }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Rule Banner Card
+                item(key = "rule_banner", contentType = "Banner") {
+                    RuleBannerCard(
+                        totalSubjects = totalExamSubjects,
+                        greenCount = greenCount,
+                        warningCount = warningCount,
+                        redCount = redCount,
+                        onInfoClick = { showRuleInfoDialog = true }
                     )
                 }
-            } else {
-                items(
-                    items = absences,
-                    key = { it.subjectName },
-                    contentType = { "SubjectAbsenceCard" }
-                ) { item ->
-                    val isCumulative = isSubjectCumulativeCredit(item, barsControlTypeMap)
-                    SubjectAbsenceCard(
-                        absence = item,
-                        isCumulativeCredit = isCumulative
-                    )
+
+                if (absences.isEmpty()) {
+                    item(key = "empty_state", contentType = "Empty") {
+                        EmptyAbsencesCard(
+                            onSyncClick = refreshAbsences
+                        )
+                    }
+                } else {
+                    items(
+                        items = absences,
+                        key = { it.subjectName },
+                        contentType = { "SubjectAbsenceCard" }
+                    ) { item ->
+                        val isCumulative = isSubjectCumulativeCredit(item, barsControlTypeMap)
+                        SubjectAbsenceCard(
+                            absence = item,
+                            isCumulativeCredit = isCumulative
+                        )
+                    }
                 }
             }
         }

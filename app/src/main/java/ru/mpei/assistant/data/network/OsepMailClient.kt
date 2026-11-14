@@ -8,6 +8,11 @@ import org.jsoup.Jsoup
 import ru.mpei.assistant.data.model.email.EmailAttachment
 import ru.mpei.assistant.data.model.email.EmailAttachmentParser
 import ru.mpei.assistant.data.model.email.EmailMessage
+import ru.mpei.assistant.security.AttachmentPolicy
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.io.File
 import java.net.URLDecoder
 import java.nio.charset.Charset
@@ -495,6 +500,8 @@ class OsepMailClient {
         var store: IMAPStore? = null
         var inbox: Folder? = null
         try {
+            AttachmentPolicy.validateName(fileName)
+            require(partIndex >= 0) { "Некорректный индекс вложения" }
             val session = createSession()
             store = connectStore(session, login, pass)
             inbox = store.getFolder("INBOX")
@@ -507,18 +514,14 @@ class OsepMailClient {
             val part = findAttachmentPart(msg, fileName, partIndex)
                 ?: throw IllegalArgumentException("Вложение '$fileName' не найдено")
 
-            targetFile.parentFile?.mkdirs()
-            val tempFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
+            require(part.size.toLong() <= AttachmentPolicy.MAX_BYTES) { "Вложение превышает лимит 25 МиБ" }
+            val coroutineContext = currentCoroutineContext()
             part.inputStream.use { input ->
-                tempFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-            if (!tempFile.renameTo(targetFile)) {
-                tempFile.copyTo(targetFile, overwrite = true)
-                tempFile.delete()
+                AttachmentPolicy.saveAtomically(input, targetFile) { coroutineContext.ensureActive() }
             }
             Result.success(targetFile)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         } finally {

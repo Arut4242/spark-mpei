@@ -17,6 +17,11 @@ open class SessionStorage internal constructor(
     private val sharedPreferences: SharedPreferences
 ) {
 
+    private val _barsAccountRevision = MutableStateFlow(0L)
+    val barsAccountRevision: StateFlow<Long> = _barsAccountRevision.asStateFlow()
+
+    fun notifyBarsLogin() { _barsAccountRevision.value++ }
+
     constructor(context: Context) : this(initSecurePrefs(context))
 
     var barsCookies: String?
@@ -179,7 +184,7 @@ open class SessionStorage internal constructor(
     }
 
     var isFavoritesBarExpanded: Boolean
-        get() = sharedPreferences.getBoolean(KEY_FAVORITES_BAR_EXPANDED, true)
+        get() = sharedPreferences.getBoolean(KEY_FAVORITES_BAR_EXPANDED, false)
         set(value) = sharedPreferences.edit().putBoolean(KEY_FAVORITES_BAR_EXPANDED, value).apply()
 
     val isOsepAuthorized: Boolean
@@ -191,6 +196,7 @@ open class SessionStorage internal constructor(
             .remove(KEY_BARS_STUDENT_URL)
             .remove(KEY_BARS_STUDENT_ID)
             .apply()
+        _barsAccountRevision.value++
     }
 
     fun clearOsepSession() {

@@ -8,6 +8,9 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.FormBody
+import okhttp3.MultipartBody
+import kotlinx.coroutines.CancellationException
 import ru.mpei.assistant.data.local.SessionStorage
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -120,6 +123,70 @@ class BarsWebClient(
     }
 
     fun isAuthorized(): Boolean = !sessionStorage.barsCookies.isNullOrBlank()
+
+    data class PageData(val bytes: ByteArray, val contentType: String) {
+        fun text(): String = bytes.toString(Charsets.UTF_8)
+    }
+
+    /** All headman requests share the same domain-isolated client and cookie jar. */
+    suspend fun requestData(
+        url: String,
+        fields: List<Pair<String, String>>? = null,
+        multipart: Boolean = false
+    ): Result<PageData> = withContext(Dispatchers.IO) {
+        try {
+            val target = trustedUrl(url)
+            check(isAuthorized()) { "Требуется авторизация в БАРС" }
+            val builder = Request.Builder().url(target)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128.0.0.0 Mobile Safari/537.36")
+            if (fields != null) {
+                val body = if (multipart) MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+                    fields.forEach { (key, value) -> addFormDataPart(key, value) }
+                }.build() else FormBody.Builder().apply {
+                    fields.forEach { (key, value) -> add(key, value) }
+                }.build()
+                builder.post(body).header("Referer", target.toString())
+            }
+            client.newCall(builder.build()).execute().use { response ->
+                check(response.isSuccessful) { "Ошибка сервера БАРС: ${response.code}" }
+                val body = response.body ?: error("Пустой ответ БАРС")
+                val limit = 20 * 1024 * 1024
+                check(body.contentLength() <= limit) { "Отчёт превышает 20 МБ" }
+                val bytes = body.byteStream().use { input ->
+                    val output = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        check(output.size() + count <= limit) { "Отчёт превышает 20 МБ" }
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                }
+                val page = PageData(bytes, body.contentType()?.toString().orEmpty())
+                if (page.contentType.contains("html")) {
+                    val doc = org.jsoup.Jsoup.parse(page.text())
+                    check(doc.select("input[type=password]").isEmpty()) {
+                        "Сессия БАРС истекла. Выполните вход повторно"
+                    }
+                }
+                Result.success(page)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun trustedUrl(url: String): HttpUrl {
+        val target = BARS_BASE_URL.toHttpUrlOrNull()!!.resolve(url)
+        require(target != null && target.isHttps && target.host.equals(allowedHost, ignoreCase = true)) {
+            "Недопустимый адрес БАРС"
+        }
+        return target
+    }
 
     companion object {
         const val BARS_HOST = "bars.mpei.ru"

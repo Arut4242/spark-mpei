@@ -5,6 +5,8 @@ import android.util.Log
 import android.webkit.CookieManager
 import androidx.compose.runtime.Stable
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -24,6 +26,7 @@ import ru.mpei.assistant.data.network.BarsWebClient
 import ru.mpei.assistant.data.network.MpeiScheduleApi
 import ru.mpei.assistant.data.parser.BarsAttendanceParser
 import ru.mpei.assistant.data.parser.BarsHtmlParser
+import ru.mpei.assistant.security.DataCrypto
 import ru.mpei.assistant.security.KeystoreCrypto
 import ru.mpei.assistant.worker.NotificationHelper
 import ru.mpei.assistant.worker.buildAbsenceNotification
@@ -36,15 +39,23 @@ class BarsRepository(
     private val barsWebClient: BarsWebClient,
     private val barsDao: BarsDao,
     private val absenceDao: AbsenceDao? = null,
-    private val sessionStorage: SessionStorage
+    private val sessionStorage: SessionStorage,
+    private val crypto: DataCrypto = KeystoreCrypto
 ) {
+    val headman = HeadmanRepository(barsWebClient)
     /**
      * Шифрует чувствительные поля предмета (контрольные недели, точки контроля) перед сохранением в SQLite
      */
     private fun encryptSubject(subject: BarsSubject): BarsSubject {
-        val encMeasures = if (subject.controlMeasuresJson.isNotEmpty() && subject.controlMeasuresJson != "[]") {
-            KeystoreCrypto.encrypt(subject.controlMeasuresJson) ?: subject.controlMeasuresJson
-        } else subject.controlMeasuresJson
+        val encMeasures =
+        if (subject.controlMeasuresJson.isNotEmpty() &&
+            subject.controlMeasuresJson != "[]"
+        ) {
+            checkNotNull(crypto.encrypt(subject.controlMeasuresJson))
+        } else {
+            subject.controlMeasuresJson
+        }
+
         return subject.copy(controlMeasuresJson = encMeasures)
     }
 
@@ -52,12 +63,22 @@ class BarsRepository(
      * Расшифровывает контрольные точки при чтении из Room
      */
     private fun decryptSubject(subject: BarsSubject): BarsSubject {
-        val decMeasures = KeystoreCrypto.decrypt(subject.controlMeasuresJson) ?: subject.controlMeasuresJson
+        val decMeasures = checkNotNull(
+            crypto.decrypt(subject.controlMeasuresJson)
+        )
         return subject.copy(controlMeasuresJson = decMeasures)
     }
 
+    private val _cacheReadError = MutableStateFlow<Throwable?>(null)
+    val cacheReadError = _cacheReadError.asStateFlow()
+
     fun getSubjectsFlow(): Flow<List<BarsSubject>> = barsDao.getAllSubjects().map { list ->
-        list.map { decryptSubject(it) }
+        try {
+            list.map { decryptSubject(it) }.also { _cacheReadError.value = null }
+        } catch (e: KeystoreCrypto.DecryptionException) {
+            _cacheReadError.value = e
+            emptyList()
+        }
     }
 
     suspend fun refreshGrades(semesterId: String? = null): Result<List<BarsSubject>> {
@@ -76,11 +97,29 @@ class BarsRepository(
         ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "parseSubjects finished: found ${subjects.size} subjects ($semName)")
 
         if (subjects.isNotEmpty()) {
-            barsDao.clearAll()
-            barsDao.insertAll(subjects.map { encryptSubject(it) })
-            ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "Saved ${subjects.size} encrypted subjects to database")
+            val encryptedSubjects = try {
+                subjects.map { encryptSubject(it) }
+            } catch (e: KeystoreCrypto.EncryptionException) {
+                return Result.failure(e)
+            }
+
+            try {
+                barsDao.replaceAll(encryptedSubjects)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return Result.failure(e)
+            }
+
+            ru.mpei.assistant.util.AppLogger.i(
+                "BARS_REPO",
+                "Saved ${subjects.size} encrypted subjects to database"
+            )
         } else {
-            ru.mpei.assistant.util.AppLogger.w("BARS_REPO", "Parsed 0 subjects from HTML")
+            ru.mpei.assistant.util.AppLogger.w(
+                "BARS_REPO",
+                "Parsed 0 subjects from HTML"
+            )
         }
 
         return Result.success(subjects)
@@ -93,6 +132,7 @@ class BarsRepository(
      * При смене студенческого аккаунта очищает данные предыдущего профиля до загрузки нового (F-04).
      */
     suspend fun onNewLogin(cookies: String, studentUrl: String?) {
+        headman.reset()
         val previousId = sessionStorage.barsStudentId
         val extractedId = studentUrl?.let { url ->
             Regex("""studentID=([a-fA-F0-9\-]{36})""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.getOrNull(1)
@@ -113,6 +153,7 @@ class BarsRepository(
         } else if (!studentUrl.isNullOrBlank() && studentUrl.contains("ST_Study/Main/Main")) {
             sessionStorage.barsStudentUrl = studentUrl
         }
+        sessionStorage.notifyBarsLogin()
     }
 
     /**
@@ -123,6 +164,7 @@ class BarsRepository(
      * 4. Удаление сессионных cookie из WebView с ожиданием callback и flush.
      */
     suspend fun logout() {
+        headman.reset()
         ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "logout initiated")
         try {
             barsWebClient.fetchHtml("https://bars.mpei.ru/bars_web/Account/LogOff")
