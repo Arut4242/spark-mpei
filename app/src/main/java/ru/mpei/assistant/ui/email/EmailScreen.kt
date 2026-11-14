@@ -5,6 +5,11 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.webkit.WebResourceRequest
+import ru.mpei.assistant.security.WebUrlPolicy
+import ru.mpei.assistant.security.EmailHtmlSanitizer
+import android.webkit.WebSettings
+import android.webkit.WebResourceResponse
+import java.io.ByteArrayInputStream
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -991,11 +996,12 @@ fun EmailDetailScreen(
                                 onClick = {
                                     scope.launch {
                                         isDownloadingAll = true
+                                        var downloaded = 0
                                         for (att in attachments) {
-                                            emailRepository.downloadAttachment(context, currentEmail.id, att)
+                                            if (emailRepository.downloadAttachment(context, currentEmail.id, att).isSuccess) downloaded++
                                         }
                                         isDownloadingAll = false
-                                        snackbarHostState.showSnackbar("Все вложения (${attachments.size}) загружены")
+                                        snackbarHostState.showSnackbar("Скачано $downloaded из ${attachments.size} вложений")
                                     }
                                 },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
@@ -1023,11 +1029,16 @@ fun EmailDetailScreen(
                                 isLoading = isLoading,
                                 onClick = {
                                     scope.launch {
+                                        val alreadyCached = emailRepository.isAttachmentCached(context, currentEmail.id, att.fileName)
                                         downloadingFileName = att.fileName
                                         val res = emailRepository.downloadAttachment(context, currentEmail.id, att)
                                         downloadingFileName = null
                                         if (res.isSuccess) {
-                                            openAttachment(context, res.getOrThrow(), att.mimeType)
+                                            if (alreadyCached) {
+                                                openAttachment(context, res.getOrThrow(), att.mimeType)
+                                            } else {
+                                                snackbarHostState.showSnackbar("Файл скачан. Нажмите на вложение ещё раз, чтобы открыть.")
+                                            }
                                         } else {
                                             snackbarHostState.showSnackbar(
                                                 res.exceptionOrNull()?.localizedMessage ?: "Ошибка скачивания вложения"
@@ -1233,9 +1244,33 @@ fun EmailHtmlViewer(
     plainBody: String,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    var pendingLink by remember { mutableStateOf<String?>(null) }
+    pendingLink?.let { target ->
+        val destination = WebUrlPolicy.externalWebUrl(target)
+        AlertDialog(
+            onDismissRequest = { pendingLink = null },
+            title = { Text("Открыть внешнюю ссылку?") },
+            text = { Text("Домен назначения: ${destination?.host}\nПротокол: ${destination?.scheme}") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingLink = null
+                    if (destination != null) {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(destination.toASCIIString()))
+                                .addCategory(Intent.CATEGORY_BROWSABLE))
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "Не удалось открыть ссылку", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }) { Text("Открыть") }
+            },
+            dismissButton = { TextButton(onClick = { pendingLink = null }) { Text("Отмена") } }
+        )
+    }
     val fullHtml = remember(htmlBody, plainBody) {
         val content = if (!htmlBody.isNullOrBlank()) {
-            htmlBody
+            EmailHtmlSanitizer.sanitize(htmlBody)
         } else {
             plainBody
                 .replace("&", "&amp;")
@@ -1247,6 +1282,7 @@ fun EmailHtmlViewer(
         <!DOCTYPE html>
         <html>
         <head>
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
         <style>
             * { box-sizing: border-box; }
@@ -1309,25 +1345,53 @@ fun EmailHtmlViewer(
                     setSupportZoom(true)
                     builtInZoomControls = true
                     displayZoomControls = false
+                    blockNetworkLoads = true
+                    allowFileAccess = false
+                    allowContentAccess = false
+                    @Suppress("DEPRECATION")
+                    allowFileAccessFromFileURLs = false
+                    @Suppress("DEPRECATION")
+                    allowUniversalAccessFromFileURLs = false
+                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                    safeBrowsingEnabled = true
+                    javaScriptCanOpenWindowsAutomatically = false
+                    setSupportMultipleWindows(false)
+                    mediaPlaybackRequiresUserGesture = true
+                    setGeolocationEnabled(false)
                     blockNetworkImage = true // Защита от скрытых веб-маяков и трекинговых пикселей
                 }
+                setDownloadListener { _, _, _, _, _ -> }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                        val url = request.url.toString()
-                        try {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            view.context.startActivity(intent)
-                        } catch (_: Exception) {}
+                        if (request.isForMainFrame && request.hasGesture() &&
+                            WebUrlPolicy.externalWebUrl(request.url.toString()) != null) {
+                            view.post { pendingLink = request.url.toString() }
+                        }
                         return true
                     }
+
+                    @Suppress("DEPRECATION")
+                    override fun shouldOverrideUrlLoading(view: WebView, url: String?): Boolean {
+                        val type = view.hitTestResult?.type
+                        if (type in setOf(WebView.HitTestResult.SRC_ANCHOR_TYPE, WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) &&
+                            WebUrlPolicy.externalWebUrl(url) != null) {
+                            view.post { pendingLink = url }
+                        }
+                        return true
+                    }
+
+                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?) =
+                        WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(byteArrayOf()))
+
+                    @Suppress("DEPRECATION")
+                    override fun shouldInterceptRequest(view: WebView?, url: String?) =
+                        WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(byteArrayOf()))
                 }
             }
         },
         update = { webView ->
             webView.setBackgroundColor(android.graphics.Color.WHITE)
-            webView.loadDataWithBaseURL("https://mail.mpei.ru", fullHtml, "text/html", "UTF-8", null)
+            webView.loadDataWithBaseURL("https://email.invalid/", fullHtml, "text/html", "UTF-8", null)
         },
         modifier = modifier
     )

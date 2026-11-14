@@ -21,6 +21,8 @@ import ru.mpei.assistant.data.network.OsepMailClient
 import ru.mpei.assistant.security.DataCrypto
 import ru.mpei.assistant.security.KeystoreCrypto
 import ru.mpei.assistant.worker.NotificationHelper
+import ru.mpei.assistant.security.AttachmentPolicy
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @Stable
@@ -32,6 +34,7 @@ class EmailRepository(
     private val crypto: DataCrypto = KeystoreCrypto
 ) {
     private val syncMutex = Mutex()
+    private val attachmentDownloadMutex = Mutex()
 
     private val _hasMoreOlder = MutableStateFlow(true)
     val hasMoreOlderFlow: StateFlow<Boolean> = _hasMoreOlder.asStateFlow()
@@ -359,40 +362,41 @@ class EmailRepository(
         return res
     }
 
-    fun getCachedAttachmentFile(context: Context, emailId: Long, fileName: String): File {
-        val attachmentsDir = File(context.cacheDir, "mail_attachments")
-        val sanitized = fileName.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
-        return File(attachmentsDir, "${emailId}_$sanitized")
-    }
+    fun getCachedAttachmentFile(context: Context, emailId: Long, fileName: String): File =
+        AttachmentPolicy.cachedFile(File(context.cacheDir, "mail_attachments"), emailId, fileName)
 
-    fun isAttachmentCached(context: Context, emailId: Long, fileName: String): Boolean {
-        val file = getCachedAttachmentFile(context, emailId, fileName)
-        return file.exists() && file.length() > 0
-    }
+    fun isAttachmentCached(context: Context, emailId: Long, fileName: String): Boolean =
+        runCatching {
+            val file = getCachedAttachmentFile(context, emailId, fileName)
+            file.isFile && file.length() in 1..AttachmentPolicy.MAX_BYTES
+        }.getOrDefault(false)
 
     suspend fun downloadAttachment(
         context: Context,
         emailId: Long,
         attachment: EmailAttachment
-    ): Result<File> {
-        val targetFile = getCachedAttachmentFile(context, emailId, attachment.fileName)
-        if (targetFile.exists() && targetFile.length() > 0) {
-            return Result.success(targetFile)
+    ): Result<File> = withContext(Dispatchers.IO) {
+        attachmentDownloadMutex.withLock {
+            try {
+                AttachmentPolicy.validateName(attachment.fileName)
+                require(attachment.sizeBytes <= AttachmentPolicy.MAX_BYTES) { "Вложение превышает лимит 25 МиБ" }
+                val targetFile = getCachedAttachmentFile(context, emailId, attachment.fileName)
+                if (targetFile.isFile && targetFile.length() in 1..AttachmentPolicy.MAX_BYTES) {
+                    return@withLock Result.success(targetFile)
+                }
+                if (targetFile.exists()) check(targetFile.delete()) { "Не удалось удалить некорректный кэш" }
+                val login = sessionStorage.osepLogin
+                val pass = sessionStorage.osepPassword
+                check(!login.isNullOrBlank() && !pass.isNullOrBlank()) { "Пользователь не авторизован в ОСЭП" }
+                mailClient.downloadAttachment(
+                    login = login, pass = pass, messageUid = emailId,
+                    fileName = attachment.fileName, partIndex = attachment.partIndex, targetFile = targetFile
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
-
-        val login = sessionStorage.osepLogin
-        val pass = sessionStorage.osepPassword
-        if (login.isNullOrBlank() || pass.isNullOrBlank()) {
-            return Result.failure(Exception("Пользователь не авторизован в ОСЭП"))
-        }
-
-        return mailClient.downloadAttachment(
-            login = login,
-            pass = pass,
-            messageUid = emailId,
-            fileName = attachment.fileName,
-            partIndex = attachment.partIndex,
-            targetFile = targetFile
-        )
     }
 }
