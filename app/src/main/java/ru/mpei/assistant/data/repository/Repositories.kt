@@ -42,6 +42,7 @@ class BarsRepository(
     private val sessionStorage: SessionStorage,
     private val crypto: DataCrypto = KeystoreCrypto
 ) {
+    val headman = HeadmanRepository(barsWebClient)
     /**
      * Шифрует чувствительные поля предмета (контрольные недели, точки контроля) перед сохранением в SQLite
      */
@@ -131,6 +132,7 @@ class BarsRepository(
      * При смене студенческого аккаунта очищает данные предыдущего профиля до загрузки нового (F-04).
      */
     suspend fun onNewLogin(cookies: String, studentUrl: String?) {
+        headman.reset()
         val previousId = sessionStorage.barsStudentId
         val extractedId = studentUrl?.let { url ->
             Regex("""studentID=([a-fA-F0-9\-]{36})""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.getOrNull(1)
@@ -151,6 +153,7 @@ class BarsRepository(
         } else if (!studentUrl.isNullOrBlank() && studentUrl.contains("ST_Study/Main/Main")) {
             sessionStorage.barsStudentUrl = studentUrl
         }
+        sessionStorage.notifyBarsLogin()
     }
 
     /**
@@ -161,6 +164,7 @@ class BarsRepository(
      * 4. Удаление сессионных cookie из WebView с ожиданием callback и flush.
      */
     suspend fun logout() {
+        headman.reset()
         ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "logout initiated")
         try {
             barsWebClient.fetchHtml("https://bars.mpei.ru/bars_web/Account/LogOff")

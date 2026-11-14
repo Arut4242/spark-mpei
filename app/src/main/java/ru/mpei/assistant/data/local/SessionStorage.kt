@@ -17,6 +17,11 @@ open class SessionStorage internal constructor(
     private val sharedPreferences: SharedPreferences
 ) {
 
+    private val _barsAccountRevision = MutableStateFlow(0L)
+    val barsAccountRevision: StateFlow<Long> = _barsAccountRevision.asStateFlow()
+
+    fun notifyBarsLogin() { _barsAccountRevision.value++ }
+
     constructor(context: Context) : this(initSecurePrefs(context))
 
     var barsCookies: String?
@@ -191,6 +196,7 @@ open class SessionStorage internal constructor(
             .remove(KEY_BARS_STUDENT_URL)
             .remove(KEY_BARS_STUDENT_ID)
             .apply()
+        _barsAccountRevision.value++
     }
 
     fun clearOsepSession() {

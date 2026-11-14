@@ -133,6 +133,8 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.jsoup)
+    // Legacy Excel reports returned by BARS (.xls); .xlsx is read with the platform ZIP API.
+    implementation("net.sourceforge.jexcelapi:jxl:2.6.12")
 
     // Security & Encrypted Preferences
     implementation(libs.androidx.security.crypto)
