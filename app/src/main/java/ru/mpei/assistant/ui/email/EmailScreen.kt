@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -81,6 +83,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import ru.mpei.assistant.worker.EmailCheckWorker
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -479,7 +482,12 @@ fun EmailScreen(
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             state = listState,
-                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 100.dp),
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 8.dp,
+                                bottom = 100.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                            ),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             groupedEmails.forEach { (dateGroupTitle, groupList) ->
@@ -1101,12 +1109,13 @@ fun EmailDetailScreen(
                     )
                 } else {
                     SelectionContainer {
+                        val bottomPadding = 110.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(Color.White)
                                 .verticalScroll(rememberScrollState())
-                                .padding(16.dp)
+                                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = bottomPadding)
                         ) {
                             val displayText = remember(currentEmail.bodyText, currentEmail.bodyHtml) {
                                 val html = currentEmail.bodyHtml
@@ -1242,7 +1251,11 @@ fun EmailHtmlViewer(
     plainBody: String,
     modifier: Modifier = Modifier
 ) {
-    val fullHtml = remember(htmlBody, plainBody) {
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val bottomPaddingPx = with(LocalDensity.current) {
+        (110.dp + navBarBottom).roundToPx()
+    }
+    val fullHtml = remember(htmlBody, plainBody, bottomPaddingPx) {
         val content = if (!htmlBody.isNullOrBlank()) {
             htmlBody
         } else {
@@ -1261,7 +1274,7 @@ fun EmailHtmlViewer(
             * { box-sizing: border-box; }
             html, body {
                 margin: 0;
-                padding: 14px;
+                padding: 14px 14px 20px 14px;
                 background-color: #ffffff !important;
                 color: #1c1c1e !important;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -1300,6 +1313,7 @@ fun EmailHtmlViewer(
         </head>
         <body bgcolor="#ffffff">
             $content
+            <div style="height: ${bottomPaddingPx}px; display: block; clear: both; margin: 0; padding: 0;"></div>
         </body>
         </html>
         """.trimIndent()

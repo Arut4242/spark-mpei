@@ -13,6 +13,17 @@ object HeadmanReportParser {
     private const val MAX_CELLS = 500000
 
     fun parse(bytes: ByteArray, students: List<GroupStudent>): HeadmanReport {
+        // If the server returned an HTML error page, extract the message
+        val isHtml = bytes.size >= 5 && (bytes[0].toInt().toChar() == '<' || bytes.take(64).map { it.toInt().toChar() }.joinToString("").lowercase().contains("<html"))
+        if (isHtml) {
+            val htmlText = bytes.toString(Charsets.UTF_8)
+            val doc = Jsoup.parse(htmlText)
+            val validationError = doc.select(".validation-summary-errors, .field-validation-error, .alert-danger, .error-message").text().trim()
+            if (validationError.isNotBlank()) {
+                error(validationError)
+            }
+        }
+
         val tables = when {
             bytes.size >= 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4b.toByte() -> xlsx(bytes)
             bytes.size >= 2 && bytes[0] == 0xd0.toByte() && bytes[1] == 0xcf.toByte() -> xls(bytes)
@@ -140,10 +151,13 @@ object HeadmanReportParser {
         ) }.toSet()
         val namePattern = Regex("[А-ЯЁ][а-яё-]+(?:\\s+[А-ЯЁ][а-яё-]+){1,3}|[А-ЯЁ][а-яё-]+\\s+[А-ЯЁ]\\.\\s*[А-ЯЁ]\\.")
         val firstData = rows.indexOfFirst { row -> row.any { normalized(it) in names } }.takeIf { it >= 0 }
-            ?: rows.indexOfFirst { row -> row.firstOrNull()?.toIntOrNull() != null && row.any { namePattern.matches(it) } }.takeIf { it >= 0 }
+            ?: rows.indexOfFirst { row -> row.any { namePattern.matches(it.trim()) } }.takeIf { it >= 0 }
+            ?: rows.indexOfFirst { row -> row.firstOrNull()?.toIntOrNull() != null && row.any { it.length > 5 && it.any { c -> c in 'А'..'я' } } }.takeIf { it >= 0 }
             ?: error("Не удалось определить строки студентов в отчёте «$name»")
         val studentColumn = rows[firstData].indexOfFirst { normalized(it) in names }.takeIf { it >= 0 }
-            ?: rows[firstData].indexOfFirst { namePattern.matches(it) }
+            ?: rows[firstData].indexOfFirst { namePattern.matches(it.trim()) }.takeIf { it >= 0 }
+            ?: rows[firstData].indexOfFirst { it.length > 5 && it.any { c -> c in 'А'..'я' } }.takeIf { it >= 0 }
+            ?: 0
         val headerRows = rows.take(firstData).filter { row ->
             // A document title merged across all columns does not label an individual metric.
             row.filter { it.isNotBlank() }.distinct().size > 1

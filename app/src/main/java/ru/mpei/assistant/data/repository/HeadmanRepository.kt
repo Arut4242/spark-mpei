@@ -54,7 +54,7 @@ class HeadmanRepository(private val client: BarsWebClient) {
         HeadmanParser.journals(html("SG/TrainingJournal/ListStudyGroup__TrainingJournals?sgID=${groupId()}"))
     }
 
-    suspend fun students(): Result<List<GroupStudent>> = result {
+    suspend fun students(onlyActive: Boolean = true): Result<List<GroupStudent>> = result {
         val id = groupId()
         val students = mutableListOf<GroupStudent>()
         var page = 1
@@ -71,7 +71,9 @@ class HeadmanRepository(private val client: BarsWebClient) {
             page++
             check(page <= 20) { "БАРС вернул слишком много страниц списка группы" }
         } while (true)
-        students.distinctBy { it.id }
+        val distinct = students.distinctBy { it.id }
+        val filtered = if (onlyActive) distinct.filter { it.isActive } else distinct
+        filtered.mapIndexed { index, student -> student.copy(number = (index + 1).toString()) }
     }
 
     suspend fun subjects(journal: HeadmanJournal): Result<List<HeadmanSubject>> = result {
@@ -129,24 +131,96 @@ class HeadmanRepository(private val client: BarsWebClient) {
     /** Called only from the report button; never by workers, tab changes, or filters. */
     suspend fun requestReport(kind: HeadmanReportKind, journal: HeadmanJournal): Result<HeadmanReport> {
         val response = result {
-            val group = checkNotNull(_group.value)
-            val semester = HeadmanParser.semesterId(html("SG/TrainingJournal/EditTrainingJournal?tjID=${journal.id}"))
-                ?: error("Не удалось определить семестр журнала")
+            val group = checkNotNull(_group.value) { "Кабинет старосты недоступен" }
+            ru.mpei.assistant.util.AppLogger.i("HEADMAN", "requestReport started: kind=${kind.name}, group=${group.name}, journal=${journal.name}")
+
+            // 1. Resolve semester: check EditTrainingJournal first, then fallback to current semester estimation
+            val semester = runCatching {
+                HeadmanParser.semesterId(html("SG/TrainingJournal/EditTrainingJournal?tjID=${journal.id}"))
+            }.getOrNull()?.takeIf { it.isNotBlank() } ?: ru.mpei.assistant.data.parser.BarsAttendanceParser.estimateCurrentSemesterId()
+
+            ru.mpei.assistant.util.AppLogger.i("HEADMAN", "requestReport: resolved semesterId=$semester")
+
+            // 2. Fetch the report page to inspect the form action and required parameters
             val path = "R/${kind.endpoint}/Main"
-            val reportForm = Jsoup.parse(html(path))
-            val hiddenFields = reportForm.select("form input[type=hidden][name]").map { it.attr("name") to it.attr("value") }
-            val form = client.requestData(path, hiddenFields + listOf("StudyGroupName" to group.name, "SemesterID" to semester), multipart = true).getOrThrow()
-            val answer = jsonResponse(form)
-            val file = if (answer != null) {
-                check(answer["success"]?.jsonPrimitive?.booleanOrNull == true) {
-                    answer["error"]?.jsonPrimitive?.contentOrNull ?: "Не удалось сформировать отчёт"
+            val formHtml = html(path)
+            val reportDoc = Jsoup.parse(formHtml)
+
+            // Extract the actual form target action (if relative or explicitly pointing to Export / Generate / Main)
+            val formEl = reportDoc.select("form").firstOrNull()
+            val rawAction = formEl?.attr("action")?.trim().orEmpty()
+            val targetPath = if (rawAction.isNotBlank()) {
+                val resolved = client.trustedUrl(path).resolve(rawAction)?.toString() ?: path
+                resolved
+            } else {
+                path
+            }
+
+            // Extract existing hidden fields
+            val hiddenFields = reportDoc.select("form input[type=hidden][name]").map { it.attr("name") to it.attr("value") }
+            val existingKeys = hiddenFields.map { it.first }.toSet()
+
+            // Check if form specifies multipart
+            val enctype = formEl?.attr("enctype")?.lowercase().orEmpty()
+            val isMultipart = enctype.contains("multipart")
+
+            // Assemble all relevant parameters
+            val additionalParams = mutableListOf<Pair<String, String>>()
+            fun addIfMissing(name: String, value: String) {
+                if (name !in existingKeys && value.isNotBlank()) {
+                    additionalParams.add(name to value)
                 }
-                val url = answer["url"]?.jsonPrimitive?.contentOrNull ?: error("БАРС не вернул ссылку на отчёт")
-                client.requestData(url).getOrThrow()
-            } else form
-            HeadmanReportParser.parse(file.bytes, students().getOrThrow())
+            }
+
+            addIfMissing("StudyGroupName", group.name)
+            addIfMissing("StudyGroupID", group.id)
+            addIfMissing("GroupID", group.id)
+            addIfMissing("sgID", group.id)
+            addIfMissing("SemesterID", semester)
+            addIfMissing("FilterSemester", semester)
+            addIfMissing("tjID", journal.id)
+            addIfMissing("Format", "Excel")
+
+            val postFields = hiddenFields + additionalParams
+            ru.mpei.assistant.util.AppLogger.i("HEADMAN", "requestReport: submitting form to $targetPath (multipart=$isMultipart, fields=${postFields.map { it.first }})")
+
+            val formResult = client.requestData(targetPath, postFields, multipart = isMultipart).getOrThrow()
+            val answer = jsonResponse(formResult)
+
+            val file = if (answer != null) {
+                // Support both camelCase and PascalCase from ASP.NET MVC
+                val isSuccess = answer["success"]?.jsonPrimitive?.booleanOrNull
+                    ?: answer["Success"]?.jsonPrimitive?.booleanOrNull
+                    ?: (answer["error"] == null && answer["Error"] == null)
+
+                val errorMsg = answer["error"]?.jsonPrimitive?.contentOrNull
+                    ?: answer["Error"]?.jsonPrimitive?.contentOrNull
+                    ?: answer["message"]?.jsonPrimitive?.contentOrNull
+                    ?: answer["Message"]?.jsonPrimitive?.contentOrNull
+
+                check(isSuccess) { errorMsg ?: "Не удалось сформировать отчёт" }
+
+                val fileUrl = answer["url"]?.jsonPrimitive?.contentOrNull
+                    ?: answer["Url"]?.jsonPrimitive?.contentOrNull
+                    ?: answer["data"]?.jsonPrimitive?.contentOrNull
+                    ?: answer["Data"]?.jsonPrimitive?.contentOrNull
+                    ?: error("БАРС не вернул ссылку на отчёт")
+
+                ru.mpei.assistant.util.AppLogger.i("HEADMAN", "requestReport: downloading file from url=$fileUrl")
+                client.requestData(fileUrl).getOrThrow()
+            } else {
+                formResult
+            }
+
+            ru.mpei.assistant.util.AppLogger.i("HEADMAN", "requestReport: parsing file bytes=${file.bytes.size}, type=${file.contentType}")
+            val parsedReport = HeadmanReportParser.parse(file.bytes, students().getOrElse { emptyList() })
+            ru.mpei.assistant.util.AppLogger.i("HEADMAN", "requestReport SUCCESS: parsed ${parsedReport.tables.size} tables")
+            parsedReport
         }
         response.onSuccess { reports[journal.id to kind] = it }
+        response.onFailure {
+            ru.mpei.assistant.util.AppLogger.e("HEADMAN", "requestReport FAILED", it)
+        }
         return response
     }
 

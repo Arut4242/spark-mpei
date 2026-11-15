@@ -15,6 +15,11 @@ data class GroupStudent(
     val email: String,
     val status: String
 ) {
+    val isActive: Boolean get() {
+        val s = status.lowercase().trim()
+        return s.contains("обучающ") || s.contains("допущен")
+    }
+
     private val parts get() = fullName.trim().split(Regex("\\s+"))
     // BARS exposes only FIO; taking the last two words preserves compound surnames.
     val surname get() = if (parts.size >= 3) parts.dropLast(2).joinToString(" ") else parts.firstOrNull().orEmpty()

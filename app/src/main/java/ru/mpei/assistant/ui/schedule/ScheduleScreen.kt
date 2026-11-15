@@ -11,6 +11,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -31,7 +32,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -938,7 +942,12 @@ fun ScheduleScreen(
 
                             LazyColumn(
                                 modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = topContentPadding, bottom = 100.dp),
+                                contentPadding = PaddingValues(
+                                    start = 16.dp,
+                                    end = 16.dp,
+                                    top = topContentPadding,
+                                    bottom = 100.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                                ),
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 items(
@@ -1855,8 +1864,10 @@ private fun LessonNoteDialog(
                                 containerColor = MaterialTheme.colorScheme.primary,
                                 disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
                             ),
-                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp),
-                            modifier = Modifier.height(38.dp)
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                            modifier = Modifier
+                                .defaultMinSize(minWidth = 1.dp, minHeight = 1.dp)
+                                .height(38.dp)
                         ) {
                             Text(
                                 text = "Готово",
@@ -1941,14 +1952,35 @@ private fun DayChipItem(
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
         label = "dayChipBg"
     )
-    val textColor = if (isSelected) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant
-    val numberColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
-    val dotColor = if (isSelected) Color.White else primaryColor
+    val animatedTextColor by animateColorAsState(
+        targetValue = if (isSelected) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "dayChipText"
+    )
+    val animatedNumberColor by animateColorAsState(
+        targetValue = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "dayChipNum"
+    )
+    val animatedDotColor by animateColorAsState(
+        targetValue = if (isSelected) Color.White else primaryColor,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "dayChipDot"
+    )
+    val chipScale by animateFloatAsState(
+        targetValue = if (isSelected) 1.04f else 1.0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
+        label = "dayChipScale"
+    )
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
             .padding(horizontal = 2.dp)
+            .graphicsLayer {
+                scaleX = chipScale
+                scaleY = chipScale
+            }
             .clip(DayChipShape)
             .background(animatedBgColor)
             .appleClickable(onClick = onClick)
@@ -1958,14 +1990,14 @@ private fun DayChipItem(
             text = chip.dayName,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
-            color = textColor
+            color = animatedTextColor
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = chip.dayNumber,
             fontSize = 16.sp,
             fontWeight = FontWeight.Bold,
-            color = numberColor
+            color = animatedNumberColor
         )
         Spacer(modifier = Modifier.height(3.dp))
         if (chip.isToday) {
@@ -1973,7 +2005,7 @@ private fun DayChipItem(
                 modifier = Modifier
                     .size(4.dp)
                     .clip(CircleShape)
-                    .background(dotColor)
+                    .background(animatedDotColor)
             )
         } else {
             Spacer(modifier = Modifier.size(4.dp))

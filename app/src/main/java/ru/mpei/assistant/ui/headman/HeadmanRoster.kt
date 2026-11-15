@@ -7,9 +7,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import ru.mpei.assistant.data.model.headman.*
 import ru.mpei.assistant.data.repository.HeadmanRepository
@@ -25,16 +27,29 @@ internal fun HeadmanRoster(repository: HeadmanRepository) {
     val clipboard = LocalClipboardManager.current
     LaunchedEffect(retry) {
         loading = true; error = null
-        val result = repository.students()
+        val result = repository.students(onlyActive = true)
         loading = false
         if (result.isSuccess) students = result.getOrThrow()
         else error = result.exceptionOrNull()?.message ?: "Не удалось загрузить список группы"
     }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { retry++ }, enabled = !loading) { Text("Обновить") }
-            TextButton(onClick = { showCopy = true }, enabled = students.isNotEmpty()) {
-                Text(if (copied) "Скопировано" else "Скопировать")
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (students.isNotEmpty()) "Студентов в списке: ${students.size}" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { retry++ }, enabled = !loading) { Text("Обновить") }
+                TextButton(onClick = { showCopy = true }, enabled = students.isNotEmpty()) {
+                    Text(if (copied) "Скопировано" else "Скопировать")
+                }
             }
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -83,22 +98,50 @@ internal fun HeadmanTable(headers: List<String>, rows: List<List<String>>, width
         Column(Modifier.width(tableWidth.dp)) {
             Row {
                 headers.forEachIndexed { index, header ->
-                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.width(widths.getOrElse(index) { 170 }.dp)) {
-                        Text(header, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(10.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(widths.getOrElse(index) { 170 }.dp)
+                    ) {
+                        Text(
+                            text = header,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(10.dp)
+                        )
                     }
                 }
             }
-            LazyColumn(Modifier.fillMaxSize()) {
+            val bottomPadding = 100.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = bottomPadding)
+            ) {
                 itemsIndexed(rows) { index, row ->
-                    Surface(color = if (index % 2 == 0) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .3f)) {
-                        Row {
+                    val rowBg = if (index % 2 == 0) {
+                        MaterialTheme.colorScheme.surface
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                    }
+                    Surface(
+                        color = rowBg,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             headers.indices.forEach { c ->
-                                Text(row.getOrElse(c) { "" }, modifier = Modifier.width(widths.getOrElse(c) { 170 }.dp).padding(10.dp),
-                                    style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    text = row.getOrElse(c) { "" },
+                                    modifier = Modifier
+                                        .width(widths.getOrElse(c) { 170 }.dp)
+                                        .padding(10.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
                             }
                         }
                     }
-                    HorizontalDivider()
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
                 }
             }
         }

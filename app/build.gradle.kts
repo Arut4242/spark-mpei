@@ -38,7 +38,7 @@ val isReleaseSigningConfigured = resolvedStoreFile.exists() &&
     !keyAliasProp.isNullOrBlank() &&
     !keyPasswordProp.isNullOrBlank()
 
-android {
+configure<com.android.build.api.dsl.ApplicationExtension> {
     namespace = "ru.mpei.assistant"
     compileSdk = 35
 
@@ -87,9 +87,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -100,6 +97,12 @@ android {
             excludes += "/META-INF/NOTICE.md"
             excludes += "/META-INF/LICENSE.md"
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 

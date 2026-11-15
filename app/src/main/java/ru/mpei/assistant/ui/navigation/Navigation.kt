@@ -1,9 +1,21 @@
 package ru.mpei.assistant.ui.navigation
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.EaseInOutCubic
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,8 +26,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -45,7 +59,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -184,7 +201,21 @@ fun MainScreen(
         NavHost(
             navController = navController,
             startDestination = Screen.Schedule.route,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            enterTransition = {
+                fadeIn(animationSpec = tween(220, easing = EaseInOutCubic)) +
+                scaleIn(initialScale = 0.985f, animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow))
+            },
+            exitTransition = {
+                fadeOut(animationSpec = tween(180, easing = EaseInOutCubic))
+            },
+            popEnterTransition = {
+                fadeIn(animationSpec = tween(220, easing = EaseInOutCubic)) +
+                scaleIn(initialScale = 0.985f, animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow))
+            },
+            popExitTransition = {
+                fadeOut(animationSpec = tween(180, easing = EaseInOutCubic))
+            }
         ) {
             composable(Screen.Schedule.route) {
                 ScheduleScreen(
@@ -230,6 +261,22 @@ fun MainScreen(
         val isDark = isAppInDarkTheme()
         val fontSize = if (navigationItems.size > 5) 9.sp else 10.sp
         val letterSpacing = if (navigationItems.size > 5) (-0.4).sp else (-0.2).sp
+        val haptic = LocalHapticFeedback.current
+
+        val selectedIndex = remember(currentRoute, navigationItems) {
+            val idx = navigationItems.indexOfFirst { it.route == currentRoute }
+            if (idx >= 0) idx else 0
+        }
+
+        val animatedIndex by animateFloatAsState(
+            targetValue = selectedIndex.toFloat(),
+            animationSpec = spring(
+                dampingRatio = 0.82f,
+                stiffness = 380f
+            ),
+            label = "dockPillPosition"
+        )
+
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -250,81 +297,130 @@ fun MainScreen(
                     .fillMaxWidth()
                     .height(64.dp)
             ) {
-                Row(
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(start = 4.dp, end = 4.dp, top = 5.dp, bottom = 3.dp),
-                    horizontalArrangement = Arrangement.SpaceAround,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
                 ) {
-                    navigationItems.forEach { screen ->
-                        val selected = currentRoute == screen.route
-                        val onClick = remember(screen, onNavigateToDestination) {
-                            { onNavigateToDestination(screen.route) }
-                        }
-                        val itemBgColor = if (selected) {
-                            if (isDark) Color(0xFF323236) else Color(0xFFDCDCE2)
-                        } else {
-                            Color.Transparent
-                        }
-                        val contentColor = if (selected) {
-                            AppleBlue
-                        } else {
-                            if (isDark) Color(0xFF8E8E93) else Color(0xFF8E8E93)
-                        }
+                    val itemCount = navigationItems.size
+                    val tabWidth = maxWidth / itemCount
 
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .padding(horizontal = 2.dp, vertical = 2.dp)
-                                .clip(CircleShape)
-                                .background(itemBgColor)
-                                .appleClickable(pressedScale = 0.94f) { onClick() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(top = 2.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
+                    // Smooth Gliding Pill Indicator that moves with physical spring physics
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .width(tabWidth)
+                            .offset(x = tabWidth * animatedIndex)
+                            .padding(horizontal = 2.dp, vertical = 2.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (isDark) Color(0xFF323236) else Color(0xFFDCDCE2)
+                            )
+                    )
+
+                    // Tab Items in Row
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.SpaceAround,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        navigationItems.forEach { screen ->
+                            val selected = currentRoute == screen.route
+                            val onClick = remember(screen, onNavigateToDestination) {
+                                {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onNavigateToDestination(screen.route)
+                                }
+                            }
+
+                            val iconScale by animateFloatAsState(
+                                targetValue = if (selected) 1.12f else 1.0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                ),
+                                label = "iconScale_${screen.route}"
+                            )
+
+                            val iconTranslationY by animateFloatAsState(
+                                targetValue = if (selected) -1.5f else 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                ),
+                                label = "iconOffsetY_${screen.route}"
+                            )
+
+                            val contentColor by animateColorAsState(
+                                targetValue = if (selected) AppleBlue else Color(0xFF8E8E93),
+                                animationSpec = tween(durationMillis = 200),
+                                label = "contentColor_${screen.route}"
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .padding(horizontal = 2.dp, vertical = 2.dp)
+                                    .clip(CircleShape)
+                                    .appleClickable(pressedScale = 0.94f) { onClick() },
+                                contentAlignment = Alignment.Center
                             ) {
-                                if (screen is Screen.Email && unreadEmailsCount > 0) {
-                                    BadgedBox(
-                                        badge = {
-                                            Badge(
-                                                containerColor = AppleBlue,
-                                                contentColor = Color.White
-                                            ) {
-                                                Text("$unreadEmailsCount", fontSize = 9.sp)
+                                Column(
+                                    modifier = Modifier.padding(top = 2.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    if (screen is Screen.Email && unreadEmailsCount > 0) {
+                                        BadgedBox(
+                                            badge = {
+                                                Badge(
+                                                    containerColor = AppleBlue,
+                                                    contentColor = Color.White
+                                                ) {
+                                                    Text("$unreadEmailsCount", fontSize = 9.sp)
+                                                }
                                             }
+                                        ) {
+                                            Icon(
+                                                imageVector = screen.icon,
+                                                contentDescription = screen.title,
+                                                tint = contentColor,
+                                                modifier = Modifier
+                                                    .size(20.dp)
+                                                    .graphicsLayer {
+                                                        scaleX = iconScale
+                                                        scaleY = iconScale
+                                                        translationY = iconTranslationY
+                                                    }
+                                            )
                                         }
-                                    ) {
+                                    } else {
                                         Icon(
                                             imageVector = screen.icon,
                                             contentDescription = screen.title,
                                             tint = contentColor,
-                                            modifier = Modifier.size(20.dp)
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .graphicsLayer {
+                                                    scaleX = iconScale
+                                                    scaleY = iconScale
+                                                    translationY = iconTranslationY
+                                                }
                                         )
                                     }
-                                } else {
-                                    Icon(
-                                        imageVector = screen.icon,
-                                        contentDescription = screen.title,
-                                        tint = contentColor,
-                                        modifier = Modifier.size(20.dp)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = screen.title,
+                                        fontSize = fontSize,
+                                        letterSpacing = letterSpacing,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                        color = contentColor
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = screen.title,
-                                    fontSize = fontSize,
-                                    letterSpacing = letterSpacing,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                                    color = contentColor
-                                )
                             }
                         }
                     }

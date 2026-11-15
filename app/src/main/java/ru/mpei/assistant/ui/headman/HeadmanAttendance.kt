@@ -96,7 +96,12 @@ internal fun HeadmanAttendance(repository: HeadmanRepository, journal: HeadmanJo
         TextButton(onClick = { retry++ }, enabled = !loading, modifier = Modifier.align(Alignment.End)) { Text("Обновить") }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { HeadmanError(it) { retry++ } }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        val bottomPadding = 100.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = bottomPadding),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             if (!loading && error == null && lessons.isEmpty()) item {
                 Text("В журнале нет занятий по выбранному фильтру")
             }

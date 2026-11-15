@@ -1,22 +1,27 @@
 package ru.mpei.assistant.data.network
 
+import java.io.EOFException
+import java.io.IOException
+import java.net.SocketException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
 import okhttp3.Cookie
 import okhttp3.CookieJar
+import okhttp3.FormBody
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.FormBody
-import okhttp3.MultipartBody
-import kotlinx.coroutines.CancellationException
 import ru.mpei.assistant.data.local.SessionStorage
-import java.io.IOException
-import java.util.concurrent.TimeUnit
+import ru.mpei.assistant.util.AppLogger
 
 class BarsWebClient(
-    private val sessionStorage: SessionStorage,
+    val sessionStorage: SessionStorage,
     val allowedHost: String = BARS_HOST
 ) {
 
@@ -45,6 +50,8 @@ class BarsWebClient(
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(3, 15, TimeUnit.SECONDS))
+        .retryOnConnectionFailure(true)
         .cookieJar(barsCookieJar)
         .followRedirects(true)
         .addInterceptor { chain ->
@@ -78,48 +85,56 @@ class BarsWebClient(
     suspend fun fetchHtml(url: String = BARS_BASE_URL): Result<String> = withContext(Dispatchers.IO) {
         val parsedUri = url.toHttpUrlOrNull()
         if (parsedUri == null || !parsedUri.isHttps || !parsedUri.host.equals(allowedHost, ignoreCase = true)) {
-            ru.mpei.assistant.util.AppLogger.e("BARS_WEB", "fetchHtml BLOCKED insecure/external url: $url")
+            AppLogger.e("BARS_WEB", "fetchHtml BLOCKED insecure/external url: $url")
             return@withContext Result.failure(SecurityException("Запрос отклонён: разрешены исключительно защищённые HTTPS-запросы к $allowedHost"))
         }
 
         val cookies = sessionStorage.barsCookies
         if (cookies.isNullOrBlank()) {
-            ru.mpei.assistant.util.AppLogger.w("BARS_WEB", "fetchHtml aborted: cookies are null or blank for url=$url")
+            AppLogger.w("BARS_WEB", "fetchHtml aborted: cookies are null or blank for url=$url")
             return@withContext Result.failure(IllegalStateException("Требуется авторизация в БАРС"))
         }
 
-        ru.mpei.assistant.util.AppLogger.i("BARS_WEB", "fetchHtml: requesting $url (cookies len=${cookies.length})")
-
-        // Cookie передаётся исключительно через CookieJar со строгой доменной изоляцией
         val request = Request.Builder()
             .url(url)
             .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
             .addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .build()
 
-        try {
-            client.newCall(request).execute().use { response ->
-                ru.mpei.assistant.util.AppLogger.i("BARS_WEB", "fetchHtml response: code=${response.code} for $url")
-                if (!response.isSuccessful) {
-                    ru.mpei.assistant.util.AppLogger.e("BARS_WEB", "Server error code=${response.code} for $url")
-                    return@withContext Result.failure(IOException("Ошибка сервера БАРС: ${response.code}"))
+        var lastException: Exception? = null
+        for (attempt in 1..3) {
+            try {
+                AppLogger.i("BARS_WEB", "fetchHtml (attempt $attempt/3): requesting $url (cookies len=${cookies.length})")
+                client.newCall(request).execute().use { response ->
+                    AppLogger.i("BARS_WEB", "fetchHtml response: code=${response.code} for $url")
+                    if (!response.isSuccessful) {
+                        AppLogger.e("BARS_WEB", "Server error code=${response.code} for $url")
+                        return@withContext Result.failure(IOException("Ошибка сервера БАРС: ${response.code}"))
+                    }
+
+                    val body = response.body?.string().orEmpty()
+                    AppLogger.i("BARS_WEB", "fetchHtml body received: len=${body.length}")
+
+                    // Check if redirected to login page
+                    if (body.contains("Войти") && body.contains("password") && !body.contains("Осенний семестр")) {
+                        AppLogger.w("BARS_WEB", "Session expired: body contains login form")
+                        return@withContext Result.failure(IllegalStateException("Сессия БАРС истекла. Пожалуйста, выполните вход повторно."))
+                    }
+
+                    return@withContext Result.success(body)
                 }
-
-                val body = response.body?.string().orEmpty()
-                ru.mpei.assistant.util.AppLogger.i("BARS_WEB", "fetchHtml body received: len=${body.length}")
-
-                // Check if redirected to login page
-                if (body.contains("Войти") && body.contains("password") && !body.contains("Осенний семестр")) {
-                    ru.mpei.assistant.util.AppLogger.w("BARS_WEB", "Session expired: body contains login form")
-                    return@withContext Result.failure(IllegalStateException("Сессия БАРС истекла. Пожалуйста, выполните вход повторно."))
+            } catch (e: Exception) {
+                lastException = e
+                AppLogger.w("BARS_WEB", "Network error requesting $url (attempt $attempt/3): ${e.message}")
+                if (attempt < 3 && isRetryableNetworkError(e)) {
+                    delay(200L * attempt)
+                    continue
                 }
-
-                Result.success(body)
+                break
             }
-        } catch (e: Exception) {
-            ru.mpei.assistant.util.AppLogger.e("BARS_WEB", "Network error requesting $url", e)
-            Result.failure(e)
         }
+        AppLogger.e("BARS_WEB", "fetchHtml failed permanently for $url", lastException)
+        Result.failure(lastException ?: IOException("Неизвестная ошибка сети БАРС"))
     }
 
     fun isAuthorized(): Boolean = !sessionStorage.barsCookies.isNullOrBlank()
@@ -134,50 +149,88 @@ class BarsWebClient(
         fields: List<Pair<String, String>>? = null,
         multipart: Boolean = false
     ): Result<PageData> = withContext(Dispatchers.IO) {
-        try {
-            val target = trustedUrl(url)
-            check(isAuthorized()) { "Требуется авторизация в БАРС" }
-            val builder = Request.Builder().url(target)
-                .header("X-Requested-With", "XMLHttpRequest")
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128.0.0.0 Mobile Safari/537.36")
-            if (fields != null) {
-                val body = if (multipart) MultipartBody.Builder().setType(MultipartBody.FORM).apply {
-                    fields.forEach { (key, value) -> addFormDataPart(key, value) }
-                }.build() else FormBody.Builder().apply {
-                    fields.forEach { (key, value) -> add(key, value) }
-                }.build()
-                builder.post(body).header("Referer", target.toString())
-            }
-            client.newCall(builder.build()).execute().use { response ->
-                check(response.isSuccessful) { "Ошибка сервера БАРС: ${response.code}" }
-                val body = response.body ?: error("Пустой ответ БАРС")
-                val limit = 20 * 1024 * 1024
-                check(body.contentLength() <= limit) { "Отчёт превышает 20 МБ" }
-                val bytes = body.byteStream().use { input ->
-                    val output = java.io.ByteArrayOutputStream()
-                    val buffer = ByteArray(8192)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        check(output.size() + count <= limit) { "Отчёт превышает 20 МБ" }
-                        output.write(buffer, 0, count)
-                    }
-                    output.toByteArray()
-                }
-                val page = PageData(bytes, body.contentType()?.toString().orEmpty())
-                if (page.contentType.contains("html")) {
-                    val doc = org.jsoup.Jsoup.parse(page.text())
-                    check(doc.select("input[type=password]").isEmpty()) {
-                        "Сессия БАРС истекла. Выполните вход повторно"
-                    }
-                }
-                Result.success(page)
-            }
-        } catch (e: CancellationException) {
-            throw e
+        val target = try {
+            trustedUrl(url)
         } catch (e: Exception) {
-            Result.failure(e)
+            return@withContext Result.failure(e)
         }
+        if (!isAuthorized()) {
+            return@withContext Result.failure(IllegalStateException("Требуется авторизация в БАРС"))
+        }
+
+        AppLogger.i("BARS_WEB", "requestData started: url=$target, fieldsCount=${fields?.size ?: 0}, multipart=$multipart")
+
+        var lastException: Exception? = null
+        for (attempt in 1..3) {
+            try {
+                val builder = Request.Builder().url(target)
+                    .header("X-Requested-With", "XMLHttpRequest")
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128.0.0.0 Mobile Safari/537.36")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,*/*;q=0.8")
+
+                if (fields != null) {
+                    val body = if (multipart) {
+                        MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+                            fields.forEach { (key, value) -> addFormDataPart(key, value) }
+                        }.build()
+                    } else {
+                        FormBody.Builder().apply {
+                            fields.forEach { (key, value) -> add(key, value) }
+                        }.build()
+                    }
+                    builder.post(body).header("Referer", target.toString())
+                }
+
+                client.newCall(builder.build()).execute().use { response ->
+                    AppLogger.i("BARS_WEB", "requestData response: code=${response.code} for $target (attempt $attempt)")
+                    check(response.isSuccessful) { "Ошибка сервера БАРС: ${response.code}" }
+                    val body = response.body ?: error("Пустой ответ БАРС")
+                    val limit = 20 * 1024 * 1024
+                    check(body.contentLength() <= limit) { "Отчёт превышает 20 МБ" }
+                    val bytes = body.byteStream().use { input ->
+                        val output = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            check(output.size() + count <= limit) { "Отчёт превышает 20 МБ" }
+                            output.write(buffer, 0, count)
+                        }
+                        output.toByteArray()
+                    }
+                    val page = PageData(bytes, body.contentType()?.toString().orEmpty())
+                    AppLogger.i("BARS_WEB", "requestData received: len=${bytes.size}, type=${page.contentType}")
+                    if (page.contentType.contains("html")) {
+                        val doc = org.jsoup.Jsoup.parse(page.text())
+                        check(doc.select("input[type=password]").isEmpty()) {
+                            "Сессия БАРС истекла. Выполните вход повторно"
+                        }
+                    }
+                    return@withContext Result.success(page)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastException = e
+                AppLogger.w("BARS_WEB", "requestData attempt $attempt/3 failed for $target: ${e.message}")
+                if (attempt < 3 && isRetryableNetworkError(e)) {
+                    delay(200L * attempt)
+                    continue
+                }
+                break
+            }
+        }
+        AppLogger.e("BARS_WEB", "requestData failed permanently for $target", lastException)
+        Result.failure(lastException ?: IOException("Неизвестная ошибка сети БАРС"))
+    }
+
+    private fun isRetryableNetworkError(e: Throwable): Boolean {
+        if (e is SocketException || e is EOFException) return true
+        val msg = e.message?.lowercase().orEmpty()
+        return msg.contains("unexpected end of stream") ||
+                msg.contains("connection reset") ||
+                msg.contains("broken pipe") ||
+                msg.contains("connection closed")
     }
 
     fun trustedUrl(url: String): HttpUrl {

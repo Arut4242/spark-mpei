@@ -45,9 +45,32 @@ object HeadmanParser {
     }
 
     fun semesterId(html: String): String? {
-        val options = Jsoup.parse(html).select("select#SemesterID option")
-        return (options.firstOrNull { it.hasAttr("selected") } ?: options.firstOrNull())
-            ?.attr("value")?.takeIf { it.toIntOrNull() != null }
+        val doc = Jsoup.parse(html)
+        // 1. Check explicitly selected option
+        val selectedOpt = doc.select(
+            "select#SemesterID option[selected], " +
+            "select[name='SemesterID'] option[selected], " +
+            "select[id*='Semester'] option[selected], " +
+            "select[name*='Semester'] option[selected]"
+        ).firstOrNull()?.attr("value")?.trim()?.takeIf { it.toIntOrNull() != null }
+        if (selectedOpt != null) return selectedOpt
+
+        // 2. Check input elements (hidden or visible)
+        val inputVal = doc.select(
+            "input#SemesterID, " +
+            "input[name='SemesterID'], " +
+            "input[id*='Semester'], " +
+            "input[name*='Semester']"
+        ).firstOrNull()?.attr("value")?.trim()?.takeIf { it.toIntOrNull() != null }
+        if (inputVal != null) return inputVal
+
+        // 3. Fallback to any option that has a numeric value
+        return doc.select(
+            "select#SemesterID option, " +
+            "select[name='SemesterID'] option, " +
+            "select[id*='Semester'] option, " +
+            "select[name*='Semester'] option"
+        ).mapNotNull { it.attr("value").trim().takeIf { v -> v.toIntOrNull() != null } }.firstOrNull()
     }
 
     fun students(html: String): List<GroupStudent> = Jsoup.parse(html)
