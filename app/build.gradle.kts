@@ -120,8 +120,6 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
 
     // Local DB - Room
-    implementation("net.zetetic:sqlcipher-android:4.10.0@aar")
-    implementation("androidx.sqlite:sqlite:2.4.0")
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
@@ -149,6 +147,4 @@ dependencies {
 
     // Unit Testing
     testImplementation(libs.junit)
-    androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

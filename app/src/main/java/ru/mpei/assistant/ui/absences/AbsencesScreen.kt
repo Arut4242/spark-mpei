@@ -129,13 +129,6 @@ fun AbsencesScreen(
 ) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    LaunchedEffect(barsRepository) {
-        barsRepository?.cacheReadError?.collect { error ->
-            if (error != null) {
-                snackbarHostState.showSnackbar("Не удалось прочитать сохранённые данные. Повторите загрузку.")
-            }
-        }
-    }
     val absences by absenceRepository.getAbsencesFlow().collectAsState(initial = emptyList())
     val barsSubjects by (barsRepository?.getSubjectsFlow() ?: flowOf(emptyList())).collectAsState(initial = emptyList())
 

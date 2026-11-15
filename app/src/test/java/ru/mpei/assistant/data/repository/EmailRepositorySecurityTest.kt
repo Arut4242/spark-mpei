@@ -17,13 +17,10 @@ import ru.mpei.assistant.data.local.EmailDao
 import ru.mpei.assistant.data.local.SessionStorage
 import ru.mpei.assistant.data.model.email.EmailMessage
 import ru.mpei.assistant.data.network.OsepMailClient
-import ru.mpei.assistant.security.AesGcmCrypto
-import ru.mpei.assistant.security.TestKeyProvider
+import ru.mpei.assistant.security.KeystoreCrypto
 import java.io.File
 
 class EmailRepositorySecurityTest {
-
-    private val crypto = AesGcmCrypto(TestKeyProvider())
 
     @get:Rule
     val tempFolder = TemporaryFolder()
@@ -108,8 +105,7 @@ class EmailRepositorySecurityTest {
         val repository = EmailRepository(
             emailDao = fakeEmailDao,
             sessionStorage = sessionStorage,
-            mailClient = mailClient,
-            crypto = crypto
+            mailClient = mailClient
         )
 
         // Создаем mock context с testCacheDir
@@ -132,8 +128,8 @@ class EmailRepositorySecurityTest {
     fun testEmailBodyDecryptionInFlow() = runBlocking {
         val originalHtml = "<p>Конфиденциальное сообщение деканата</p>"
         val originalText = "Конфиденциальное сообщение деканата"
-        val cipherHtml = crypto.encrypt(originalHtml)
-        val cipherText = crypto.encrypt(originalText)
+        val cipherHtml = KeystoreCrypto.encrypt(originalHtml)
+        val cipherText = KeystoreCrypto.encrypt(originalText)
 
         assertNotEquals(originalHtml, cipherHtml)
         assertTrue(cipherHtml!!.startsWith("ENC:"))
@@ -155,8 +151,7 @@ class EmailRepositorySecurityTest {
         val repository = EmailRepository(
             emailDao = fakeEmailDao,
             sessionStorage = sessionStorage,
-            mailClient = mailClient,
-            crypto = crypto
+            mailClient = mailClient
         )
 
         val retrievedEmails = repository.getEmailsFlow().first()

@@ -1,9 +1,6 @@
 package ru.mpei.assistant.data.local
 
 import android.content.Context
-import java.io.File
-import java.io.RandomAccessFile
-import ru.mpei.assistant.security.DatabaseKeyStorage
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -82,49 +79,18 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        class DatabaseOpenException(cause: Throwable) :
-            Exception("Не удалось открыть защищённую базу. Данные сохранены; повторите попытку.", cause)
-
-        fun getInstance(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
-            INSTANCE ?: openEncrypted(context.applicationContext).also { INSTANCE = it }
-        }
-
-        private fun openEncrypted(context: Context): AppDatabase {
-            try {
-                System.loadLibrary("sqlcipher")
-                val file = context.getDatabasePath("mpei_assistant.db")
-                check(file.parentFile!!.isDirectory || file.parentFile!!.mkdirs())
-                val lock = File(context.noBackupFilesDir, "database-encryption.lock")
-                RandomAccessFile(lock, "rw").use { lockFile ->
-                    lockFile.channel.lock().use {
-                        val password = DatabaseKeyStorage.loadOrCreate(
-                            context,
-                            encryptedDatabaseExists = file.exists() &&
-                                !EncryptedDatabaseMigration.isPlaintext(file)
-                        )
-                        try {
-                            EncryptedDatabaseMigration.prepare(file, password)
-                            val database = Room.databaseBuilder(context, AppDatabase::class.java, file.name)
-                                .openHelperFactory(PreservingSqlCipherFactory(password.copyOf()))
-                                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
-                                .build()
-                            try {
-                                // Force schema validation/migrations before publishing the singleton.
-                                database.openHelper.writableDatabase
-                                return database
-                            } catch (e: Exception) {
-                                database.close()
-                                throw e
-                            }
-                        } finally {
-                            password.fill(0)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                throw DatabaseOpenException(e)
-            } catch (e: UnsatisfiedLinkError) {
-                throw DatabaseOpenException(e)
+        fun getInstance(context: Context): AppDatabase {
+            return INSTANCE ?: synchronized(this) {
+                val instance = Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "mpei_assistant.db"
+                )
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .fallbackToDestructiveMigration()
+                    .build()
+                INSTANCE = instance
+                instance
             }
         }
     }

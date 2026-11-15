@@ -17,12 +17,9 @@ import ru.mpei.assistant.data.local.SessionStorage
 import ru.mpei.assistant.data.model.absence.SubjectAbsence
 import ru.mpei.assistant.data.model.bars.BarsSubject
 import ru.mpei.assistant.data.network.BarsWebClient
-import ru.mpei.assistant.security.AesGcmCrypto
-import ru.mpei.assistant.security.TestKeyProvider
+import ru.mpei.assistant.security.KeystoreCrypto
 
 class BarsRepositorySecurityTest {
-
-    private val crypto = AesGcmCrypto(TestKeyProvider())
 
     private class FakeBarsDao : BarsDao {
         var clearAllCalled = false
@@ -106,8 +103,7 @@ class BarsRepositorySecurityTest {
             barsWebClient = barsWebClient,
             barsDao = fakeBarsDao,
             absenceDao = fakeAbsenceDao,
-            sessionStorage = sessionStorage,
-            crypto = crypto
+            sessionStorage = sessionStorage
         )
 
         repository.logout()
@@ -126,8 +122,7 @@ class BarsRepositorySecurityTest {
             barsWebClient = barsWebClient,
             barsDao = fakeBarsDao,
             absenceDao = fakeAbsenceDao,
-            sessionStorage = sessionStorage,
-            crypto = crypto
+            sessionStorage = sessionStorage
         )
 
         // Вход нового студента с другим studentID
@@ -143,7 +138,7 @@ class BarsRepositorySecurityTest {
     @Test
     fun testGradesDecryptionInFlow() = runBlocking {
         val originalMeasures = """[{"name":"КМ-1","grade":"5","dateReceived":"12.10.2024"}]"""
-        val cipherMeasures = crypto.encrypt(originalMeasures)
+        val cipherMeasures = KeystoreCrypto.encrypt(originalMeasures)
 
         assertNotEquals(originalMeasures, cipherMeasures)
         assertTrue(cipherMeasures!!.startsWith("ENC:"))
@@ -165,8 +160,7 @@ class BarsRepositorySecurityTest {
             barsWebClient = barsWebClient,
             barsDao = fakeBarsDao,
             absenceDao = fakeAbsenceDao,
-            sessionStorage = sessionStorage,
-            crypto = crypto
+            sessionStorage = sessionStorage
         )
 
         val retrieved = repository.getSubjectsFlow().first()

@@ -51,13 +51,6 @@ fun BarsScreen(
 ) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    LaunchedEffect(barsRepository) {
-        barsRepository.cacheReadError.collect { error ->
-            if (error != null) {
-                snackbarHostState.showSnackbar("Не удалось прочитать сохранённые данные. Повторите загрузку.")
-            }
-        }
-    }
 
     val subjects by remember(barsRepository) {
         barsRepository.getSubjectsFlow()

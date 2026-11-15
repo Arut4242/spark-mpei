@@ -1,11 +1,7 @@
 package ru.mpei.assistant.ui.bars
 
-import ru.mpei.assistant.security.WebUrlPolicy
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.SslErrorHandler
-import android.net.http.SslError
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.webkit.CookieManager
@@ -62,16 +58,24 @@ fun BarsLoginWebView(
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var detectedLoggedIn by remember { mutableStateOf(false) }
 
-    fun isAllowedUrl(url: String?): Boolean = WebUrlPolicy.isBarsUrl(url)
+    fun isAllowedUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val uri = Uri.parse(url)
+        val scheme = uri.scheme?.lowercase() ?: return false
+        if (scheme != "https" && scheme != "http") return false
+        val host = uri.host?.lowercase() ?: return false
+        return host == "bars.mpei.ru" || host == "mpei.ru" || host.endsWith(".mpei.ru")
+    }
 
     fun captureAndComplete() {
-        if (!isAllowedUrl(webViewInstance?.url)) return
         val cookieManager = CookieManager.getInstance()
         val c1 = cookieManager.getCookie("https://bars.mpei.ru/bars_web/")
         val c2 = cookieManager.getCookie("https://bars.mpei.ru/")
         val currentUrl = webViewInstance?.url
+        ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "captureAndComplete: url=$currentUrl, c1 len=${c1?.length ?: 0}, c2 len=${c2?.length ?: 0}")
         val combined = listOfNotNull(c1, c2).distinct().joinToString("; ")
         if (combined.isNotBlank()) {
+            ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "Cookies captured successfully! Total len=${combined.length}, url=$currentUrl")
             onLoginSuccess(combined, currentUrl)
         } else {
             ru.mpei.assistant.util.AppLogger.w("BARS_LOGIN", "captureAndComplete called, but cookies are empty!")
@@ -181,57 +185,63 @@ fun BarsLoginWebView(
                         webViewInstance = this
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
-                        settings.allowFileAccess = false
-                        settings.allowContentAccess = false
-                        @Suppress("DEPRECATION")
-                        settings.allowFileAccessFromFileURLs = false
-                        @Suppress("DEPRECATION")
-                        settings.allowUniversalAccessFromFileURLs = false
-                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                        settings.safeBrowsingEnabled = true
-                        settings.javaScriptCanOpenWindowsAutomatically = false
-                        settings.setSupportMultipleWindows(false)
-                        setDownloadListener { _, _, _, _, _ -> }
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
                         settings.userAgentString =
                             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
 
                         webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean =
-                                !isAllowedUrl(request?.url?.toString())
+                            /**
+                             * Ограничение переходов доверенными origin (F-06):
+                             * Разрешены исключительно домены bars.mpei.ru и *.mpei.ru.
+                             * Посторонние URL блокируются в WebView и открываются во внешнем браузере.
+                             */
+                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                val url = request?.url?.toString() ?: return true
+                                if (isAllowedUrl(url)) {
+                                    return false
+                                }
+                                ru.mpei.assistant.util.AppLogger.w("BARS_LOGIN", "Blocked external navigation in WebView to: $url")
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, request?.url)
+                                    view?.context?.startActivity(intent)
+                                } catch (e: Exception) {
+                                    ru.mpei.assistant.util.AppLogger.e("BARS_LOGIN", "Failed to launch external browser for $url", e)
+                                }
+                                return true
+                            }
 
                             @Suppress("DEPRECATION")
-                            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean =
-                                !isAllowedUrl(url)
-
-                            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? =
-                                request?.let { BarsLoginResourceLoader.load(it) } ?: BarsLoginResourceLoader.blocked()
-
-                            override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                                handler?.cancel()
+                            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                                if (isAllowedUrl(url)) {
+                                    return false
+                                }
+                                ru.mpei.assistant.util.AppLogger.w("BARS_LOGIN", "Blocked external navigation in WebView to: $url")
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                    view?.context?.startActivity(intent)
+                                } catch (e: Exception) {
+                                    ru.mpei.assistant.util.AppLogger.e("BARS_LOGIN", "Failed to launch external browser for $url", e)
+                                }
+                                return true
                             }
 
                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                                if (!isAllowedUrl(url)) {
-                                    view?.stopLoading()
-                                    return
-                                }
                                 super.onPageStarted(view, url, favicon)
                                 isLoading = true
                                 val parsedHost = url?.let { Uri.parse(it).host }
                                 if (!parsedHost.isNullOrBlank()) {
                                     currentHost = parsedHost
                                 }
+                                ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "WebView pageStarted: $url (host=$currentHost)")
                             }
 
                             override fun onPageFinished(view: WebView?, url: String?) {
-                                if (!isAllowedUrl(url)) return
                                 super.onPageFinished(view, url)
                                 isLoading = false
                                 val parsedHost = url?.let { Uri.parse(it).host }
                                 if (!parsedHost.isNullOrBlank()) {
                                     currentHost = parsedHost
                                 }
+                                ru.mpei.assistant.util.AppLogger.i("BARS_LOGIN", "WebView pageFinished: $url (host=$currentHost)")
 
                                 // Проверяем, появились ли элементы авторизованного личного кабинета
                                 view?.evaluateJavascript(

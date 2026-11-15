@@ -25,13 +25,6 @@ interface BarsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(subjects: List<BarsSubject>)
 
-    @Transaction
-    suspend fun replaceAll(subjects: List<BarsSubject>) {
-        clearAll()
-        insertAll(subjects)
-    }
-
-
     @Query("DELETE FROM bars_subjects")
     suspend fun clearAll()
 }

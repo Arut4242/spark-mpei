@@ -27,8 +27,6 @@ fun buildAbsenceNotification(
 ): AbsenceNotificationData? {
     if (diffUnexcused <= 0 && diffExcused <= 0) return null
 
-    val isCumulativeCredit = newAbsence.isCumulativeCredit
-
     if (diffUnexcused > 0) {
         val title = "Новый пропуск: $subjectName"
         val remaining = newAbsence.remainingAllowedPairs
@@ -37,38 +35,21 @@ fun buildAbsenceNotification(
 
         val text = when {
             !newAbsence.isAutomatAllowedByAbsences ->
-                "Зафиксирован пропуск без ув. причины (+$diffUnexcused)." +
-                    if (!isCumulativeCredit) {
-                        " Лимит 6,25% превышен ($totalUnexcused из макс. $maxAllowed пар). Автомат утерян!"
-                    } else {
-                        " Всего пропусков: $totalUnexcused."
-                    }
+                "Зафиксирован пропуск без ув. причины (+$diffUnexcused). Лимит 6,25% превышен ($totalUnexcused из макс. $maxAllowed пар). Автомат утерян!"
             remaining == 0 ->
-                "Зафиксирован пропуск (+$diffUnexcused)." +
-                    if (!isCumulativeCredit) {
-                        " Вы на грани лимита 6,25% ($totalUnexcused из макс. $maxAllowed пар)! Больше пропускать нельзя."
-                    } else {
-                        " Всего пропусков: $totalUnexcused."
-                    }
+                "Зафиксирован пропуск (+$diffUnexcused). Вы на грани лимита 6,25% ($totalUnexcused из макс. $maxAllowed пар)! Больше пропускать нельзя."
             else ->
-                "Зафиксирован пропуск (+$diffUnexcused). Всего пропусков: $totalUnexcused." +
-                    if (!isCumulativeCredit) {
-                        " До потери автомата осталось: $remaining пар(ы)."
-                    } else {
-                        ""
-                    }
+                "Зафиксирован пропуск (+$diffUnexcused). Всего пропусков: $totalUnexcused. До потери автомата осталось: $remaining пар(ы)."
         }
 
         return AbsenceNotificationData(
             title = title,
             text = text,
-            isWarning = !isCumulativeCredit &&
-                (!newAbsence.isAutomatAllowedByAbsences || remaining == 0)
+            isWarning = !newAbsence.isAutomatAllowedByAbsences || remaining == 0
         )
     } else {
         val title = "Уважительный пропуск: $subjectName"
-        val text = "В БАРС внесён пропуск по справке/уваж. причине (+$diffExcused). Всего: ${newAbsence.excusedPairs}." +
-            if (!isCumulativeCredit) " На автомат не влияет." else ""
+        val text = "В БАРС внесён пропуск по справке/уваж. причине (+$diffExcused). Всего: ${newAbsence.excusedPairs}. На автомат не влияет."
         return AbsenceNotificationData(
             title = title,
             text = text,
