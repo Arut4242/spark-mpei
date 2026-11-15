@@ -63,6 +63,7 @@ object NotificationHelper {
     const val CHANNEL_GRADES = "channel_bars_grades"
     const val CHANNEL_ABSENCES = "channel_bars_absences"
     const val CHANNEL_EMAILS = "channel_mpei_emails"
+    const val CHANNEL_LESSON_REMINDERS = "channel_lesson_reminders"
 
     fun createChannels(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -92,9 +93,19 @@ object NotificationHelper {
                 description = "Уведомления о новых письмах из деканата и от преподавателей"
             }
 
+            val remindersChannel = NotificationChannel(
+                CHANNEL_LESSON_REMINDERS,
+                "Напоминания о занятиях",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Напоминания к парам и заметкам в расписании"
+                enableVibration(true)
+            }
+
             manager.createNotificationChannel(gradesChannel)
             manager.createNotificationChannel(absencesChannel)
             manager.createNotificationChannel(emailsChannel)
+            manager.createNotificationChannel(remindersChannel)
         }
     }
 
@@ -188,6 +199,57 @@ object NotificationHelper {
             .setContentTitle(title)
             .setContentText(subject)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        manager.notify(id, notification)
+    }
+
+    fun showLessonReminderNotification(
+        context: Context,
+        id: Int,
+        discipline: String,
+        beginTime: String,
+        auditorium: String?,
+        noteText: String,
+        minutesBefore: Int
+    ) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        createChannels(context)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("navigate_to", "schedule")
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            id,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val title = when {
+            minutesBefore == 0 -> "Пара начинается сейчас: $discipline"
+            minutesBefore == 15 -> "Через 15 мин: $discipline"
+            minutesBefore == 60 -> "Через 1 час: $discipline"
+            minutesBefore == 120 -> "Через 2 часа: $discipline"
+            minutesBefore > 0 -> "Через $minutesBefore мин: $discipline"
+            else -> "Напоминание к занятию: $discipline"
+        }
+
+        val audText = if (!auditorium.isNullOrBlank()) " • ауд. $auditorium" else ""
+        val timeAudLine = if (beginTime.isNotBlank()) "Начало в $beginTime$audText" else if (!auditorium.isNullOrBlank()) "Ауд. $auditorium" else ""
+        val fullBody = if (noteText.isNotBlank()) {
+            if (timeAudLine.isNotBlank()) "Заметка: $noteText\n$timeAudLine" else "Заметка: $noteText"
+        } else timeAudLine
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_LESSON_REMINDERS)
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle(title)
+            .setContentText(if (noteText.isNotBlank()) "Заметка: $noteText" else timeAudLine)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(fullBody))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)

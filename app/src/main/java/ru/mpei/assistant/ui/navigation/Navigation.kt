@@ -240,7 +240,7 @@ fun MainScreen(
         ) {
             Surface(
                 shape = CircleShape,
-                color = if (isDark) Color(0xD91C1C1E) else Color(0xD9F2F2F7),
+                color = if (isDark) Color(0xF21C1C1E) else Color(0xF2F2F2F7),
                 shadowElevation = 8.dp,
                 border = BorderStroke(
                     0.5.dp,
@@ -253,7 +253,7 @@ fun MainScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                        .padding(start = 4.dp, end = 4.dp, top = 5.dp, bottom = 3.dp),
                     horizontalArrangement = Arrangement.SpaceAround,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -284,6 +284,7 @@ fun MainScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Column(
+                                modifier = Modifier.padding(top = 2.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {

@@ -19,6 +19,7 @@ import ru.mpei.assistant.data.local.SessionStorage
 import ru.mpei.assistant.data.model.absence.SubjectAbsence
 import ru.mpei.assistant.data.model.bars.BarsSubject
 import ru.mpei.assistant.data.model.schedule.Lesson
+import ru.mpei.assistant.data.model.schedule.LessonNote
 import ru.mpei.assistant.data.model.schedule.SearchEntity
 import ru.mpei.assistant.data.network.BarsWebClient
 import ru.mpei.assistant.data.network.MpeiScheduleApi
@@ -260,6 +261,21 @@ class ScheduleRepository(
         } catch (_: Exception) {
             false
         }
+    }
+
+    fun getNotesFlow(groupId: Long): Flow<List<LessonNote>> =
+        scheduleDao.getNotesForGroup(groupId)
+
+    suspend fun saveNote(note: LessonNote) {
+        scheduleDao.saveNote(note)
+    }
+
+    suspend fun deleteNote(groupId: Long, date: String, discipline: String, beginLesson: String) {
+        scheduleDao.deleteNote(groupId, date, discipline, beginLesson)
+    }
+
+    suspend fun getNote(groupId: Long, date: String, discipline: String, beginLesson: String): LessonNote? {
+        return scheduleDao.getNote(groupId, date, discipline, beginLesson)
     }
 }
 

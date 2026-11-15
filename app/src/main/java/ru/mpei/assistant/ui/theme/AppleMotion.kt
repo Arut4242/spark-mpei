@@ -11,7 +11,15 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -152,5 +160,26 @@ suspend fun PointerInputScope.detectTapAndDragAfterLongPress(
         } else {
             onTap()
         }
+    }
+}
+
+/**
+ * Снэкбар в стиле Apple, парящий над плавающим нижним меню навигации.
+ */
+@Composable
+fun AppleSnackbarHost(
+    hostState: SnackbarHostState,
+    modifier: Modifier = Modifier
+) {
+    SnackbarHost(
+        hostState = hostState,
+        modifier = modifier
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(bottom = 82.dp)
+    ) { data ->
+        Snackbar(
+            snackbarData = data,
+            shape = RoundedCornerShape(16.dp)
+        )
     }
 }

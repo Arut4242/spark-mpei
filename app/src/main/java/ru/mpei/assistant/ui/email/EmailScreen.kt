@@ -115,6 +115,7 @@ import ru.mpei.assistant.ui.theme.AppleBlue
 import ru.mpei.assistant.ui.theme.AppleCardShape
 import ru.mpei.assistant.ui.theme.AppleOrange
 import ru.mpei.assistant.ui.theme.ApplePillShape
+import ru.mpei.assistant.ui.theme.AppleSnackbarHost
 import ru.mpei.assistant.ui.theme.AppleTopMenuShape
 import ru.mpei.assistant.ui.theme.appleClickable
 import ru.mpei.assistant.ui.theme.applePressAnimation
@@ -214,7 +215,7 @@ fun EmailScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { AppleSnackbarHost(snackbarHostState) },
         topBar = {
             Surface(
                 shape = RoundedCornerShape(22.dp),

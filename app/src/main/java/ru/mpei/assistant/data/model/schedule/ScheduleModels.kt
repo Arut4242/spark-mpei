@@ -2,6 +2,7 @@ package ru.mpei.assistant.data.model.schedule
 
 import androidx.compose.runtime.Immutable
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import kotlinx.serialization.Serializable
 
@@ -68,4 +69,23 @@ data class Lesson(
     val kindOfWork: String = "",
     val lecturer: String? = null,
     val stream: String? = null
+)
+
+@Immutable
+@Serializable
+@Entity(
+    tableName = "lesson_notes",
+    indices = [Index(value = ["groupId", "date", "discipline", "beginLesson"], unique = true)]
+)
+data class LessonNote(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val groupId: Long = 0L,
+    val date: String = "",
+    val discipline: String = "",
+    val beginLesson: String = "",
+    val text: String = "",
+    val reminderMinutesBefore: Int? = null,
+    val reminderTimeMillis: Long? = null,
+    val updatedAt: Long = System.currentTimeMillis()
 )

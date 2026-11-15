@@ -1,6 +1,12 @@
 package ru.mpei.assistant.ui.schedule
 
+import android.Manifest
 import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -17,6 +23,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,18 +50,26 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Today
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -64,6 +80,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -98,20 +116,29 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.core.content.ContextCompat
+import ru.mpei.assistant.worker.LessonReminderScheduler
 import ru.mpei.assistant.data.local.SessionStorage
 import ru.mpei.assistant.data.model.schedule.Lesson
+import ru.mpei.assistant.data.model.schedule.LessonNote
 import ru.mpei.assistant.data.model.schedule.SearchEntity
 import ru.mpei.assistant.data.repository.ScheduleRepository
 import androidx.compose.ui.graphics.RectangleShape
 import ru.mpei.assistant.ui.theme.AppleBlue
 import ru.mpei.assistant.ui.theme.AppleCardShape
 import ru.mpei.assistant.ui.theme.ApplePillShape
+import ru.mpei.assistant.ui.theme.AppleRed
+import ru.mpei.assistant.ui.theme.AppleSnackbarHost
 import ru.mpei.assistant.ui.theme.AppleTopMenuShape
 import ru.mpei.assistant.ui.theme.appleClickable
 import ru.mpei.assistant.ui.theme.appleCombinedClickable
@@ -119,12 +146,15 @@ import ru.mpei.assistant.ui.theme.detectTapAndDragAfterLongPress
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Collections
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
 private val DayChipShape = RoundedCornerShape(16.dp)
 private val DAY_NAMES = listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб")
 private const val BASE_WEEK_PAGE = 500
+private const val BASE_DAY_PAGE = BASE_WEEK_PAGE * 6
+private const val TOTAL_DAY_PAGES = 1000 * 6
 
 @Immutable
 data class DayChipUiModel(
@@ -234,6 +264,16 @@ fun ScheduleScreen(
         scheduleRepository.getLessonsFlow(currentGroupId)
     }.collectAsState(initial = emptyList())
 
+    val notes by remember(scheduleRepository, currentGroupId) {
+        scheduleRepository.getNotesFlow(currentGroupId)
+    }.collectAsState(initial = emptyList())
+
+    val notesMap = remember(notes) {
+        notes.associateBy { "${it.date}_${it.discipline}_${it.beginLesson}" }
+    }
+
+    var editingLessonForNote by remember { mutableStateOf<Lesson?>(null) }
+
     // Pre-group lessons by date for O(1) page access
     val lessonsByDate = remember(lessons) {
         lessons.groupBy { it.date }.mapValues { (_, list) ->
@@ -241,9 +281,13 @@ fun ScheduleScreen(
         }
     }
 
+    val todayCal = remember { Calendar.getInstance() }
+    val todayDow = remember(todayCal) { todayCal.get(Calendar.DAY_OF_WEEK) }
+    val todayDayIndex = remember(todayDow) { if (todayDow in 2..7) todayDow - 2 else -1 }
+
     // Initial smart day and week offset (e.g. on Sunday -> next Monday)
-    val initialWeekAndDay = remember {
-        val cal = Calendar.getInstance()
+    val initialWeekAndDay = remember(todayCal) {
+        val cal = todayCal
         val dow = cal.get(Calendar.DAY_OF_WEEK) // 1 = Sun, 2 = Mon, ..., 7 = Sat
         val hour = cal.get(Calendar.HOUR_OF_DAY)
         when {
@@ -258,16 +302,75 @@ fun ScheduleScreen(
         }
     }
 
-    // Week pager for 1:1 smooth swiping between weeks
+    val upcomingTarget by remember(lessons, initialWeekAndDay) {
+        derivedStateOf {
+            findUpcomingLessonTarget(lessons) ?: initialWeekAndDay
+        }
+    }
+
+    val initialDayPage = remember(initialWeekAndDay) {
+        BASE_DAY_PAGE + initialWeekAndDay.first * 6 + initialWeekAndDay.second
+    }
+
+    // Horizontal pager for smooth continuous swiping across days and weeks
+    val pagerState = rememberPagerState(initialPage = initialDayPage) { TOTAL_DAY_PAGES }
+
+    // Week pager for the top week switcher panel
     val weekPagerState = rememberPagerState(initialPage = BASE_WEEK_PAGE + initialWeekAndDay.first) { 1000 }
-    val weekOffset by remember { derivedStateOf { weekPagerState.currentPage - BASE_WEEK_PAGE } }
 
-    // Horizontal pager for swiping between Monday..Saturday (pages 0..5)
-    val pagerState = rememberPagerState(initialPage = initialWeekAndDay.second) { 6 }
+    // Synchronous derived states for day selection, week offset, and today button visibility
+    val currentDayOffset by remember { derivedStateOf { pagerState.currentPage - BASE_DAY_PAGE } }
+    val currentWeekOffset by remember { derivedStateOf { Math.floorDiv(currentDayOffset, 6) } }
+    val selectedDayIndex by remember { derivedStateOf { Math.floorMod(currentDayOffset, 6) } }
+    val weekOffset = currentWeekOffset
 
-    // Synchronous derived states for day selection and today button visibility
-    val selectedDayIndex by remember { derivedStateOf { pagerState.currentPage } }
-    val showTodayButton by remember { derivedStateOf { weekOffset != 0 } }
+    // Synchronize top week switcher when schedule pager swipes across week boundaries (e.g. Sat -> Mon or Mon -> Sat)
+    LaunchedEffect(currentWeekOffset) {
+        val targetWeekPage = BASE_WEEK_PAGE + currentWeekOffset
+        if (weekPagerState.currentPage != targetWeekPage) {
+            weekPagerState.animateScrollToPage(targetWeekPage)
+        }
+    }
+
+    // Synchronize schedule pager when user directly swipes the top week switcher panel
+    LaunchedEffect(weekPagerState.currentPage) {
+        val targetWeekOffset = weekPagerState.currentPage - BASE_WEEK_PAGE
+        val targetDayPage = BASE_DAY_PAGE + targetWeekOffset * 6 + selectedDayIndex
+        if (weekPagerState.isScrollInProgress && pagerState.currentPage != targetDayPage) {
+            pagerState.scrollToPage(targetDayPage)
+        }
+    }
+
+    val showTodayButton by remember {
+        derivedStateOf {
+            val target = upcomingTarget
+            val currentWeek = currentWeekOffset
+            val currentDay = selectedDayIndex
+
+            // If currently viewing the nearest upcoming lesson target, never show button
+            if (currentWeek == target.first && currentDay == target.second) {
+                return@derivedStateOf false
+            }
+
+            // If today is a weekday in current week and currently viewing today, never show button
+            if (currentWeek == 0 && todayDayIndex != -1 && currentDay == todayDayIndex) {
+                return@derivedStateOf false
+            }
+
+            // If nearest classes are in another week (e.g. next week because today is weekend/Sunday),
+            // do not show button while browsing that target week
+            if (target.first != 0 && currentWeek == target.first) {
+                return@derivedStateOf false
+            }
+
+            // Show return button when navigated away from the active target and today
+            if (target.first != 0) {
+                currentWeek != target.first && currentWeek != 0
+            } else {
+                currentWeek != 0
+            }
+        }
+    }
 
     // When lessons are loaded from database, jump to the nearest upcoming lesson
     var hasAppliedUpcomingJump by remember { mutableStateOf(false) }
@@ -277,8 +380,9 @@ fun ScheduleScreen(
             val target = findUpcomingLessonTarget(lessons)
             if (target != null) {
                 val (targetWeek, targetDay) = target
+                val targetDayPage = BASE_DAY_PAGE + targetWeek * 6 + targetDay
                 weekPagerState.scrollToPage(BASE_WEEK_PAGE + targetWeek)
-                pagerState.scrollToPage(targetDay)
+                pagerState.scrollToPage(targetDayPage)
             }
         }
     }
@@ -303,18 +407,23 @@ fun ScheduleScreen(
     val dayNumberFormat = remember { SimpleDateFormat("d", Locale.getDefault()) }
     val monthTitleFormat = remember { SimpleDateFormat("d MMMM", Locale("ru")) }
 
-    // Compute Monday of the selected week
-    val currentMonday = remember(weekOffset) {
+    val baseMonday = remember {
         val cal = Calendar.getInstance()
         cal.firstDayOfWeek = Calendar.MONDAY
-        val dayOfWeek = cal.get(Calendar.DAY_OF_WEEK)
-        val daysFromMonday = if (dayOfWeek == Calendar.SUNDAY) 6 else dayOfWeek - Calendar.MONDAY
+        val dow = cal.get(Calendar.DAY_OF_WEEK)
+        val daysFromMonday = if (dow == Calendar.SUNDAY) 6 else dow - Calendar.MONDAY
         cal.add(Calendar.DAY_OF_YEAR, -daysFromMonday)
-        cal.add(Calendar.WEEK_OF_YEAR, weekOffset)
         cal.set(Calendar.HOUR_OF_DAY, 0)
         cal.set(Calendar.MINUTE, 0)
         cal.set(Calendar.SECOND, 0)
         cal.set(Calendar.MILLISECOND, 0)
+        cal
+    }
+
+    // Compute Monday of the selected week
+    val currentMonday = remember(weekOffset, baseMonday) {
+        val cal = baseMonday.clone() as Calendar
+        cal.add(Calendar.WEEK_OF_YEAR, weekOffset)
         cal
     }
 
@@ -328,8 +437,7 @@ fun ScheduleScreen(
     }
 
     // Check today date and current minute of day
-    val todayCal = remember { Calendar.getInstance() }
-    val todayString = remember { dateApiFormat.format(todayCal.time) }
+    val todayString = remember(todayCal) { dateApiFormat.format(todayCal.time) }
 
     var currentMinuteOfDay by remember {
         val cal = Calendar.getInstance()
@@ -459,7 +567,10 @@ fun ScheduleScreen(
                                     shape = CircleShape
                                 )
                                 .appleClickable {
-                                    val now = weekDays.getOrElse(pagerState.currentPage) { weekDays[0] }
+                                    val now = (baseMonday.clone() as Calendar).apply {
+                                        add(Calendar.WEEK_OF_YEAR, currentWeekOffset)
+                                        add(Calendar.DAY_OF_YEAR, selectedDayIndex)
+                                    }
                                     DatePickerDialog(
                                         context,
                                         { _, year, month, dayOfMonth ->
@@ -472,23 +583,14 @@ fun ScheduleScreen(
                                                 val diff = if (dow == Calendar.SUNDAY) 6 else dow - Calendar.MONDAY
                                                 add(Calendar.DAY_OF_YEAR, -diff)
                                             }
-                                            val baseMonday = Calendar.getInstance().apply {
-                                                firstDayOfWeek = Calendar.MONDAY
-                                                val dow = get(Calendar.DAY_OF_WEEK)
-                                                val diff = if (dow == Calendar.SUNDAY) 6 else dow - Calendar.MONDAY
-                                                add(Calendar.DAY_OF_YEAR, -diff)
-                                                set(Calendar.HOUR_OF_DAY, 0)
-                                                set(Calendar.MINUTE, 0)
-                                                set(Calendar.SECOND, 0)
-                                                set(Calendar.MILLISECOND, 0)
-                                            }
                                             val diffMillis = pickedMonday.timeInMillis - baseMonday.timeInMillis
                                             val diffWeeks = (diffMillis / (1000L * 60 * 60 * 24 * 7)).toInt()
                                             val dow = pickedCal.get(Calendar.DAY_OF_WEEK)
                                             val dayIdx = if (dow in 2..7) dow - 2 else 0
                                             scope.launch {
+                                                val targetPage = BASE_DAY_PAGE + diffWeeks * 6 + dayIdx
                                                 weekPagerState.scrollToPage(BASE_WEEK_PAGE + diffWeeks)
-                                                pagerState.scrollToPage(dayIdx)
+                                                pagerState.scrollToPage(targetPage)
                                             }
                                         },
                                         now.get(Calendar.YEAR),
@@ -702,7 +804,7 @@ fun ScheduleScreen(
             }
         }
     },
-    snackbarHost = { SnackbarHost(snackbarHostState) }
+    snackbarHost = { AppleSnackbarHost(snackbarHostState) }
     ) { innerPadding ->
         if (currentGroupId == -1L) {
             // No group selected
@@ -749,9 +851,18 @@ fun ScheduleScreen(
                     HorizontalPager(
                         state = pagerState,
                         modifier = Modifier.fillMaxSize(),
-                        key = { pageIndex -> pageIndex }
+                        key = { pageIndex -> pageIndex },
+                        beyondViewportPageCount = 1
                     ) { pageIndex ->
-                    val pageCal = weekDays.getOrElse(pageIndex) { weekDays[0] }
+                    val dayOffset = pageIndex - BASE_DAY_PAGE
+                    val pageWeekOffset = Math.floorDiv(dayOffset, 6)
+                    val pageDayIndex = Math.floorMod(dayOffset, 6)
+                    val pageCal = remember(pageIndex, baseMonday) {
+                        val cal = baseMonday.clone() as Calendar
+                        cal.add(Calendar.WEEK_OF_YEAR, pageWeekOffset)
+                        cal.add(Calendar.DAY_OF_YEAR, pageDayIndex)
+                        cal
+                    }
                     val pageDateString = remember(pageCal) { dateApiFormat.format(pageCal.time) }
                     val pageLessons = remember(lessonsByDate, pageDateString) {
                         lessonsByDate[pageDateString] ?: emptyList()
@@ -858,12 +969,19 @@ fun ScheduleScreen(
                                             } else null
                                             val currentProgress = breakProgress?.totalProgress ?: 0f
 
+                                            val noteKey = "${lesson.date}_${lesson.discipline}_${lesson.beginLesson}"
+                                            val currentNote = notesMap[noteKey]
+
                                             LessonCard(
                                                 lesson = lesson,
                                                 isCurrent = isCurrent,
                                                 remainingMinutes = remainingMin,
                                                 currentProgress = currentProgress,
-                                                breakProgress = breakProgress
+                                                breakProgress = breakProgress,
+                                                noteText = currentNote?.text,
+                                                reminderMinutesBefore = currentNote?.reminderMinutesBefore,
+                                                reminderTimeMillis = currentNote?.reminderTimeMillis,
+                                                onNoteClick = { editingLessonForNote = lesson }
                                             )
                                         }
                                         is ScheduleScreenItem.LunchItem -> {
@@ -983,10 +1101,12 @@ fun ScheduleScreen(
                                             isSelected = (page == weekPagerState.currentPage) && (chip.index == selectedDayIndex),
                                             onClick = {
                                                 scope.launch {
+                                                    val pageOffset = page - BASE_WEEK_PAGE
+                                                    val targetDayPage = BASE_DAY_PAGE + pageOffset * 6 + chip.index
                                                     if (page != weekPagerState.currentPage) {
                                                         weekPagerState.animateScrollToPage(page)
                                                     }
-                                                    pagerState.animateScrollToPage(chip.index)
+                                                    pagerState.animateScrollToPage(targetDayPage)
                                                 }
                                             },
                                             modifier = Modifier.weight(1f)
@@ -1013,10 +1133,15 @@ fun ScheduleScreen(
                                 .padding(top = 2.dp, bottom = 4.dp)
                                 .appleClickable {
                                     scope.launch {
-                                        weekPagerState.animateScrollToPage(BASE_WEEK_PAGE)
-                                        val currentDay = todayCal.get(Calendar.DAY_OF_WEEK)
-                                        val targetIdx = if (currentDay in 2..7) currentDay - 2 else 0
-                                        pagerState.animateScrollToPage(targetIdx)
+                                        val target = upcomingTarget
+                                        val (targetWeek, targetDay) = if (todayDayIndex != -1) {
+                                            Pair(0, todayDayIndex)
+                                        } else {
+                                            target
+                                        }
+                                        val targetDayPage = BASE_DAY_PAGE + targetWeek * 6 + targetDay
+                                        weekPagerState.animateScrollToPage(BASE_WEEK_PAGE + targetWeek)
+                                        pagerState.animateScrollToPage(targetDayPage)
                                     }
                                 }
                         ) {
@@ -1032,7 +1157,7 @@ fun ScheduleScreen(
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    "Вернуться к сегодня",
+                                    if (todayDayIndex != -1) "Вернуться к сегодня" else "К расписанию",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = Color.White
@@ -1080,6 +1205,672 @@ fun ScheduleScreen(
                 }
             }
         )
+    }
+
+    if (editingLessonForNote != null) {
+        val targetLesson = editingLessonForNote!!
+        val key = "${targetLesson.date}_${targetLesson.discipline}_${targetLesson.beginLesson}"
+        val existingNote = notesMap[key]
+        LessonNoteDialog(
+            lesson = targetLesson,
+            initialText = existingNote?.text ?: "",
+            initialReminderMinutes = existingNote?.reminderMinutesBefore,
+            initialReminderTimeMillis = existingNote?.reminderTimeMillis,
+            onDismiss = { editingLessonForNote = null },
+            onSave = { newText, reminderMinutes, reminderMillis ->
+                scope.launch {
+                    val finalReminderMillis = reminderMillis ?: if (reminderMinutes != null && reminderMinutes > 0) {
+                        LessonReminderScheduler.calculateReminderTimeMillis(
+                            targetLesson.date, targetLesson.beginLesson, reminderMinutes
+                        )
+                    } else null
+
+                    if (newText.isBlank() && reminderMinutes == null && finalReminderMillis == null) {
+                        if (existingNote != null) {
+                            scheduleRepository.deleteNote(
+                                groupId = currentGroupId,
+                                date = targetLesson.date,
+                                discipline = targetLesson.discipline,
+                                beginLesson = targetLesson.beginLesson
+                            )
+                            LessonReminderScheduler.cancelReminder(
+                                context = context,
+                                groupId = currentGroupId,
+                                date = targetLesson.date,
+                                beginLesson = targetLesson.beginLesson
+                            )
+                            snackbarHostState.showSnackbar("Заметка удалена")
+                        }
+                    } else {
+                        val note = LessonNote(
+                            id = existingNote?.id ?: 0,
+                            groupId = currentGroupId,
+                            date = targetLesson.date,
+                            discipline = targetLesson.discipline,
+                            beginLesson = targetLesson.beginLesson,
+                            text = newText,
+                            reminderMinutesBefore = reminderMinutes,
+                            reminderTimeMillis = finalReminderMillis
+                        )
+                        scheduleRepository.saveNote(note)
+
+                        if (finalReminderMillis != null && finalReminderMillis > System.currentTimeMillis()) {
+                            LessonReminderScheduler.scheduleReminder(
+                                context = context,
+                                note = note,
+                                discipline = targetLesson.discipline,
+                                auditorium = targetLesson.auditorium
+                            )
+                            val cal = Calendar.getInstance().apply { timeInMillis = finalReminderMillis }
+                            val timeStr = SimpleDateFormat("d MMMM в HH:mm", Locale("ru")).format(cal.time)
+                            snackbarHostState.showSnackbar("Заметка сохранена, напоминание на $timeStr")
+                        } else {
+                            LessonReminderScheduler.cancelReminder(
+                                context = context,
+                                groupId = currentGroupId,
+                                date = targetLesson.date,
+                                beginLesson = targetLesson.beginLesson
+                            )
+                            snackbarHostState.showSnackbar("Заметка сохранена")
+                        }
+                    }
+                }
+                editingLessonForNote = null
+            },
+            onDelete = {
+                scope.launch {
+                    scheduleRepository.deleteNote(
+                        groupId = currentGroupId,
+                        date = targetLesson.date,
+                        discipline = targetLesson.discipline,
+                        beginLesson = targetLesson.beginLesson
+                    )
+                    LessonReminderScheduler.cancelReminder(
+                        context = context,
+                        groupId = currentGroupId,
+                        date = targetLesson.date,
+                        beginLesson = targetLesson.beginLesson
+                    )
+                    snackbarHostState.showSnackbar("Заметка удалена")
+                }
+                editingLessonForNote = null
+            }
+        )
+    }
+}
+
+internal fun parseCustomDateTime(dateStr: String, timeStr: String, defaultYear: Int): Long? {
+    val cleanDate = dateStr.trim().replace('/', '.').replace('-', '.')
+    val cleanTime = timeStr.trim().replace('.', ':')
+
+    val timeParts = cleanTime.split(":")
+    if (timeParts.size != 2) return null
+    val hour = timeParts[0].toIntOrNull() ?: return null
+    val minute = timeParts[1].toIntOrNull() ?: return null
+    if (hour !in 0..23 || minute !in 0..59) return null
+
+    val dateParts = cleanDate.split(".")
+    val (day, month, year) = when (dateParts.size) {
+        2 -> {
+            val d = dateParts[0].toIntOrNull() ?: return null
+            val m = dateParts[1].toIntOrNull() ?: return null
+            Triple(d, m, defaultYear)
+        }
+        3 -> {
+            if (dateParts[0].length == 4) {
+                val y = dateParts[0].toIntOrNull() ?: return null
+                val m = dateParts[1].toIntOrNull() ?: return null
+                val d = dateParts[2].toIntOrNull() ?: return null
+                Triple(d, m, y)
+            } else {
+                val d = dateParts[0].toIntOrNull() ?: return null
+                val m = dateParts[1].toIntOrNull() ?: return null
+                val y = dateParts[2].toIntOrNull() ?: return null
+                Triple(d, m, y)
+            }
+        }
+        else -> return null
+    }
+
+    if (month !in 1..12 || day !in 1..31) return null
+
+    return try {
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.YEAR, year)
+            set(Calendar.MONTH, month - 1)
+            set(Calendar.DAY_OF_MONTH, day)
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        cal.timeInMillis
+    } catch (e: Exception) {
+        null
+    }
+}
+
+@Composable
+private fun LessonNoteDialog(
+    lesson: Lesson,
+    initialText: String,
+    initialReminderMinutes: Int? = null,
+    initialReminderTimeMillis: Long? = null,
+    onDismiss: () -> Unit,
+    onSave: (String, Int?, Long?) -> Unit,
+    onDelete: () -> Unit
+) {
+    val context = LocalContext.current
+    var text by remember { mutableStateOf(initialText) }
+
+    val defaultDate = remember(lesson.date) {
+        try {
+            val parts = lesson.date.replace('-', '.').split('.')
+            if (parts.size == 3) {
+                if (parts[0].length == 4) {
+                    "${parts[2]}.${parts[1]}.${parts[0]}"
+                } else {
+                    "${parts[0]}.${parts[1]}.${parts[2]}"
+                }
+            } else {
+                SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+            }
+        } catch (e: Exception) {
+            SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+        }
+    }
+
+    val defaultTime = remember(lesson.beginLesson) {
+        if (lesson.beginLesson.isNotBlank()) {
+            try {
+                val parts = lesson.beginLesson.split(":")
+                if (parts.size == 2) {
+                    val h = parts[0].toInt()
+                    val m = parts[1].toInt()
+                    var totalMin = h * 60 + m - 15
+                    if (totalMin < 0) totalMin = 0
+                    String.format(Locale.getDefault(), "%02d:%02d", totalMin / 60, totalMin % 60)
+                } else lesson.beginLesson
+            } catch (e: Exception) {
+                lesson.beginLesson
+            }
+        } else "09:00"
+    }
+
+    val isInitialCustom = initialReminderMinutes == -1 || (initialReminderMinutes == null && initialReminderTimeMillis != null)
+
+    var selectedReminderMinutes by remember {
+        mutableStateOf<Int?>(
+            if (isInitialCustom) -1 else initialReminderMinutes
+        )
+    }
+
+    var customDateText by remember {
+        mutableStateOf(
+            if (initialReminderTimeMillis != null) {
+                SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date(initialReminderTimeMillis))
+            } else defaultDate
+        )
+    }
+
+    var customTimeText by remember {
+        mutableStateOf(
+            if (initialReminderTimeMillis != null) {
+                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(initialReminderTimeMillis))
+            } else defaultTime
+        )
+    }
+
+    val defYear = remember(lesson.date) {
+        try {
+            lesson.date.replace('-', '.').split('.').firstOrNull { it.length == 4 }?.toInt()
+                ?: Calendar.getInstance().get(Calendar.YEAR)
+        } catch (e: Exception) {
+            Calendar.getInstance().get(Calendar.YEAR)
+        }
+    }
+
+    val customParsedMillis = remember(customDateText, customTimeText, defYear) {
+        parseCustomDateTime(customDateText, customTimeText, defYear)
+    }
+
+    val hasExistingNote = initialText.isNotBlank() || initialReminderMinutes != null || initialReminderTimeMillis != null
+
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .padding(vertical = 20.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+        ) {
+            val scrollState = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .verticalScroll(scrollState),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Amber icon with note pencil
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFFFB300).copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.EditNote,
+                        contentDescription = null,
+                        tint = Color(0xFFFFB300),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = if (hasExistingNote) "Заметка к занятию" else "Новая заметка",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = lesson.discipline,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    textAlign = TextAlign.Center
+                )
+
+                if (lesson.beginLesson.isNotBlank() && lesson.endLesson.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "${lesson.beginLesson} – ${lesson.endLesson}" +
+                                if (!lesson.auditorium.isNullOrBlank()) " • ${lesson.auditorium}" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = {
+                        Text(
+                            "Например: подготовить отчёт, принести калькулятор, сдать задание...",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(100.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Reminder section header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (selectedReminderMinutes != null) Icons.Default.NotificationsActive else Icons.Default.NotificationsNone,
+                        contentDescription = null,
+                        tint = if (selectedReminderMinutes != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Напоминание",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Reminder options row (chips): "Выкл", "15 мин", "1 час", "2 часа", "Своё..."
+                val reminderOptions = remember {
+                    listOf(
+                        Pair(null, "Выкл"),
+                        Pair(15, "15 мин"),
+                        Pair(60, "1 час"),
+                        Pair(120, "2 часа"),
+                        Pair(-1, "Своё...")
+                    )
+                }
+
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(reminderOptions) { (option, label) ->
+                        val isSelected = selectedReminderMinutes == option
+                        Surface(
+                            shape = ApplePillShape,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = BorderStroke(
+                                width = 0.5.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                            ),
+                            modifier = Modifier.appleClickable {
+                                if (option != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                                        notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    }
+                                }
+                                selectedReminderMinutes = option
+                            }
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Interactive Custom Date & Time input area when "Своё..." is selected
+                AnimatedVisibility(
+                    visible = selectedReminderMinutes == -1,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "Напишите или выберите дату и время:",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                // Date input
+                                OutlinedTextField(
+                                    value = customDateText,
+                                    onValueChange = { customDateText = it },
+                                    label = { Text("Дата", fontSize = 10.sp) },
+                                    placeholder = { Text("ДД.ММ.ГГГГ", fontSize = 11.sp) },
+                                    singleLine = true,
+                                    textStyle = TextStyle(fontSize = 13.sp),
+                                    modifier = Modifier.weight(1.15f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                        unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                                    ),
+                                    trailingIcon = {
+                                        IconButton(
+                                            onClick = {
+                                                val cal = Calendar.getInstance().apply {
+                                                    customParsedMillis?.let { timeInMillis = it }
+                                                }
+                                                DatePickerDialog(
+                                                    context,
+                                                    { _, year, month, dayOfMonth ->
+                                                        customDateText = String.format(Locale.getDefault(), "%02d.%02d.%04d", dayOfMonth, month + 1, year)
+                                                    },
+                                                    cal.get(Calendar.YEAR),
+                                                    cal.get(Calendar.MONTH),
+                                                    cal.get(Calendar.DAY_OF_MONTH)
+                                                ).show()
+                                            },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CalendarToday,
+                                                contentDescription = "Выбрать дату",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                )
+
+                                // Time input
+                                OutlinedTextField(
+                                    value = customTimeText,
+                                    onValueChange = { customTimeText = it },
+                                    label = { Text("Время", fontSize = 10.sp) },
+                                    placeholder = { Text("ЧЧ:ММ", fontSize = 11.sp) },
+                                    singleLine = true,
+                                    textStyle = TextStyle(fontSize = 13.sp),
+                                    modifier = Modifier.weight(0.85f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                        unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                                    ),
+                                    trailingIcon = {
+                                        IconButton(
+                                            onClick = {
+                                                val cal = Calendar.getInstance().apply {
+                                                    customParsedMillis?.let { timeInMillis = it }
+                                                }
+                                                TimePickerDialog(
+                                                    context,
+                                                    { _, hourOfDay, minute ->
+                                                        customTimeText = String.format(Locale.getDefault(), "%02d:%02d", hourOfDay, minute)
+                                                    },
+                                                    cal.get(Calendar.HOUR_OF_DAY),
+                                                    cal.get(Calendar.MINUTE),
+                                                    true
+                                                ).show()
+                                            },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.AccessTime,
+                                                contentDescription = "Выбрать время",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Status info banner
+                val reminderStatus = remember(selectedReminderMinutes, lesson.date, lesson.beginLesson, customParsedMillis) {
+                    when (selectedReminderMinutes) {
+                        null -> null
+                        -1 -> {
+                            if (customParsedMillis == null) {
+                                Pair(false, "Укажите дату (ДД.ММ.ГГГГ) и время (ЧЧ:ММ)")
+                            } else if (customParsedMillis <= System.currentTimeMillis()) {
+                                Pair(false, "Время для этого напоминания уже прошло")
+                            } else {
+                                val cal = Calendar.getInstance().apply { timeInMillis = customParsedMillis }
+                                val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(cal.time)
+                                val dateStr = SimpleDateFormat("d MMMM", Locale("ru")).format(cal.time)
+                                Pair(true, "Уведомление придёт $dateStr в $timeStr")
+                            }
+                        }
+                        else -> {
+                            val triggerMillis = LessonReminderScheduler.calculateReminderTimeMillis(
+                                lesson.date, lesson.beginLesson, selectedReminderMinutes!!
+                            )
+                            if (triggerMillis != null) {
+                                if (triggerMillis <= System.currentTimeMillis()) {
+                                    Pair(false, "Время для этого напоминания уже прошло")
+                                } else {
+                                    val cal = Calendar.getInstance().apply { timeInMillis = triggerMillis }
+                                    val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(cal.time)
+                                    val dateStr = SimpleDateFormat("d MMMM", Locale("ru")).format(cal.time)
+                                    Pair(true, "Уведомление придёт $dateStr в $timeStr")
+                                }
+                            } else null
+                        }
+                    }
+                }
+
+                if (reminderStatus != null) {
+                    val (isSuccess, statusMsg) = reminderStatus
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSuccess) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else MaterialTheme.colorScheme.error.copy(alpha = 0.08f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (isSuccess) Icons.Default.NotificationsActive else Icons.Default.WarningAmber,
+                                contentDescription = null,
+                                tint = if (isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = statusMsg,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // Bottom Action Row - Perfectly aligned in ONE row!
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    if (hasExistingNote) {
+                        TextButton(
+                            onClick = onDelete,
+                            colors = ButtonDefaults.textButtonColors(contentColor = AppleRed),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(38.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteOutline,
+                                contentDescription = "Удалить",
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Удалить",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.width(1.dp))
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        TextButton(
+                            onClick = onDismiss,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(38.dp)
+                        ) {
+                            Text(
+                                text = "Отмена",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+
+                        val isCustomInvalid = selectedReminderMinutes == -1 && (reminderStatus?.first != true)
+
+                        Button(
+                            onClick = {
+                                val (finalMinutes, finalMillis) = when (selectedReminderMinutes) {
+                                    null -> Pair(null, null)
+                                    -1 -> Pair(-1, customParsedMillis)
+                                    else -> {
+                                        val m = LessonReminderScheduler.calculateReminderTimeMillis(
+                                            lesson.date, lesson.beginLesson, selectedReminderMinutes!!
+                                        )
+                                        Pair(selectedReminderMinutes, m)
+                                    }
+                                }
+                                onSave(text.trim(), finalMinutes, finalMillis)
+                            },
+                            enabled = !isCustomInvalid,
+                            shape = ApplePillShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                            ),
+                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp),
+                            modifier = Modifier.height(38.dp)
+                        ) {
+                            Text(
+                                text = "Готово",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

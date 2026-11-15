@@ -10,6 +10,7 @@ import ru.mpei.assistant.data.model.absence.SubjectAbsence
 import ru.mpei.assistant.data.model.bars.BarsSubject
 import ru.mpei.assistant.data.model.email.EmailMessage
 import ru.mpei.assistant.data.model.schedule.Lesson
+import ru.mpei.assistant.data.model.schedule.LessonNote
 
 @Dao
 interface BarsDao {
@@ -51,6 +52,21 @@ interface ScheduleDao {
         deleteLessonsForGroup(groupId)
         insertLessons(lessons)
     }
+
+    @Query("SELECT * FROM lesson_notes WHERE groupId = :groupId")
+    fun getNotesForGroup(groupId: Long): Flow<List<LessonNote>>
+
+    @Query("SELECT * FROM lesson_notes WHERE groupId = :groupId AND date = :date AND discipline = :discipline AND beginLesson = :beginLesson LIMIT 1")
+    suspend fun getNote(groupId: Long, date: String, discipline: String, beginLesson: String): LessonNote?
+
+    @Query("SELECT * FROM lesson_notes WHERE reminderTimeMillis IS NOT NULL AND reminderTimeMillis > :nowMillis")
+    suspend fun getFutureReminders(nowMillis: Long): List<LessonNote>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveNote(note: LessonNote)
+
+    @Query("DELETE FROM lesson_notes WHERE groupId = :groupId AND date = :date AND discipline = :discipline AND beginLesson = :beginLesson")
+    suspend fun deleteNote(groupId: Long, date: String, discipline: String, beginLesson: String)
 }
 
 @Dao

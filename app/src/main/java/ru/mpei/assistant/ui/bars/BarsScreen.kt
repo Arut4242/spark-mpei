@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.ui.graphics.Color
+import ru.mpei.assistant.ui.theme.AppleSnackbarHost
 import ru.mpei.assistant.ui.theme.AppleTopMenuShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -126,7 +127,7 @@ fun BarsScreen(
                 )
             }
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        snackbarHost = { AppleSnackbarHost(snackbarHostState) }
     ) { innerPadding ->
         Box(
             modifier = Modifier

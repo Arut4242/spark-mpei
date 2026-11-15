@@ -10,10 +10,11 @@ import ru.mpei.assistant.data.model.absence.SubjectAbsence
 import ru.mpei.assistant.data.model.bars.BarsSubject
 import ru.mpei.assistant.data.model.email.EmailMessage
 import ru.mpei.assistant.data.model.schedule.Lesson
+import ru.mpei.assistant.data.model.schedule.LessonNote
 
 @Database(
-    entities = [BarsSubject::class, Lesson::class, SubjectAbsence::class, EmailMessage::class],
-    version = 6,
+    entities = [BarsSubject::class, Lesson::class, SubjectAbsence::class, EmailMessage::class, LessonNote::class],
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -79,6 +80,34 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `lesson_notes` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `groupId` INTEGER NOT NULL,
+                        `date` TEXT NOT NULL,
+                        `discipline` TEXT NOT NULL,
+                        `beginLesson` TEXT NOT NULL,
+                        `text` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_lesson_notes_groupId_date_discipline_beginLesson` ON `lesson_notes` (`groupId`, `date`, `discipline`, `beginLesson`)"
+                )
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `lesson_notes` ADD COLUMN `reminderMinutesBefore` INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE `lesson_notes` ADD COLUMN `reminderTimeMillis` INTEGER DEFAULT NULL")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -86,7 +115,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "mpei_assistant.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

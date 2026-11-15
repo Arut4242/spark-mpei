@@ -49,6 +49,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import ru.mpei.assistant.ui.theme.AppleSnackbarHost
 import ru.mpei.assistant.ui.theme.AppleTopMenuShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -203,7 +204,7 @@ fun AbsencesScreen(
                 )
             }
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        snackbarHost = { AppleSnackbarHost(snackbarHostState) }
     ) { innerPadding ->
         LazyColumn(
             modifier = Modifier

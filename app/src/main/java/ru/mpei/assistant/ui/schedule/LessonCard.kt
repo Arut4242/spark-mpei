@@ -10,6 +10,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,8 +26,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material3.Card
@@ -35,6 +39,7 @@ import androidx.compose.material3.CardElevation
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -43,9 +48,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.mpei.assistant.data.model.schedule.Lesson
@@ -54,7 +65,10 @@ import ru.mpei.assistant.ui.theme.AppleCardShape
 import ru.mpei.assistant.ui.theme.AppleGreen
 import ru.mpei.assistant.ui.theme.AppleOrange
 import ru.mpei.assistant.ui.theme.ApplePillShape
+import ru.mpei.assistant.ui.theme.appleClickable
+import ru.mpei.assistant.ui.theme.appleCombinedClickable
 import ru.mpei.assistant.ui.theme.applePressAnimation
+import ru.mpei.assistant.ui.theme.isAppInDarkTheme
 
 @Immutable
 private data class BadgeColors(
@@ -117,7 +131,7 @@ fun formatLessonType(kindOfWork: String): String {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun LessonCard(
     lesson: Lesson,
@@ -126,8 +140,15 @@ fun LessonCard(
     remainingMinutes: Int = 0,
     currentProgress: Float = 0f,
     breakProgress: LessonBreakProgress? = null,
-    elevation: CardElevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    elevation: CardElevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    noteText: String? = null,
+    reminderMinutesBefore: Int? = null,
+    reminderTimeMillis: Long? = null,
+    onNoteClick: () -> Unit = {}
 ) {
+    val haptic = LocalHapticFeedback.current
+    val isDark = isAppInDarkTheme()
+    val hasNote = !noteText.isNullOrBlank()
     val primaryColor = MaterialTheme.colorScheme.primary
     val isBreak = isCurrent && breakProgress?.stage == LessonStage.BREAK
     val activeAccentColor = if (isBreak) AppleOrange else primaryColor
@@ -157,7 +178,17 @@ fun LessonCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .applePressAnimation(),
+            .appleCombinedClickable(
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onNoteClick()
+                },
+                onClick = {
+                    if (hasNote) {
+                        onNoteClick()
+                    }
+                }
+            ),
         shape = AppleCardShape,
         border = cardBorder,
         colors = CardDefaults.cardColors(containerColor = containerColor),
@@ -353,6 +384,73 @@ fun LessonCard(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                }
+
+                if (hasNote) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isDark) Color(0xFF26231A) else Color(0xFFFFF9E6),
+                        border = BorderStroke(0.5.dp, if (isDark) Color(0xFF4D4020) else Color(0xFFFFE082)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .appleClickable(onClick = onNoteClick)
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.EditNote,
+                                    contentDescription = "Заметка",
+                                    tint = if (isDark) Color(0xFFFFD54F) else Color(0xFFF57F17),
+                                    modifier = Modifier.size(17.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = noteText ?: "",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Normal,
+                                    color = if (isDark) Color(0xFFFFECB3) else Color(0xFF3E2723),
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (reminderMinutesBefore != null || reminderTimeMillis != null) {
+                                val reminderLabel = when {
+                                    reminderMinutesBefore == 0 -> "в начале пары"
+                                    reminderMinutesBefore == 15 -> "за 15 мин до пары"
+                                    reminderMinutesBefore == 60 -> "за 1 ч до пары"
+                                    reminderMinutesBefore == 120 -> "за 2 ч до пары"
+                                    reminderMinutesBefore != null && reminderMinutesBefore > 0 -> "за $reminderMinutesBefore мин до пары"
+                                    reminderTimeMillis != null -> {
+                                        val cal = Calendar.getInstance().apply { timeInMillis = reminderTimeMillis }
+                                        SimpleDateFormat("d MMM в HH:mm", Locale("ru")).format(cal.time)
+                                    }
+                                    else -> "в установленное время"
+                                }
+                                val reminderPrefix = if (reminderMinutesBefore != null && reminderMinutesBefore > 0) {
+                                    "Напоминание $reminderLabel"
+                                } else {
+                                    "Напоминание: $reminderLabel"
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.NotificationsActive,
+                                        contentDescription = "Напоминание",
+                                        tint = if (isDark) Color(0xFFFFD54F) else Color(0xFFE65100),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = reminderPrefix,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (isDark) Color(0xFFFFE082) else Color(0xFFE65100)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
