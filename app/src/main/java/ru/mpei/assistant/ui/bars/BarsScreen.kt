@@ -1,32 +1,40 @@
 package ru.mpei.assistant.ui.bars
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.graphics.Color
+import ru.mpei.assistant.ui.theme.AppleTopMenuShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,31 +70,65 @@ fun BarsScreen(
     var showLoginDialog by remember { mutableStateOf(false) }
     var showAutostartDialog by remember { mutableStateOf(false) }
 
-    val refreshGrades: () -> Unit = {
-        if (isAuthorized && !isLoading) {
-            isLoading = true
-            scope.launch {
-                val res = try {
-                    barsRepository.refreshGrades()
-                } finally {
-                    isLoading = false
-                }
-                if (res.isFailure) {
-                    val msg = res.exceptionOrNull()?.message ?: "Ошибка загрузки"
-                    if (msg.contains("Сессия")) isAuthorized = false
-                    snackbarHostState.showSnackbar(msg)
-                }
-            }
-        }
-    }
-
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 4.dp,
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                TopAppBar(
+                    windowInsets = WindowInsets(0, 0, 0, 0),
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent
+                    ),
+                    title = {
+                        Column {
+                            Text("Оценки БАРС")
+                            val currentSem = subjects.firstOrNull()?.semester
+                            if (!currentSem.isNullOrBlank()) {
+                                Text(
+                                    text = currentSem,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    },
+                    actions = {
+                        if (isAuthorized) {
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        isLoading = true
+                                        val res = barsRepository.refreshGrades()
+                                        isLoading = false
+                                        if (res.isFailure) {
+                                            val msg = res.exceptionOrNull()?.message ?: "Ошибка загрузки"
+                                            snackbarHostState.showSnackbar(msg)
+                                            if (msg.contains("Сессия")) {
+                                                isAuthorized = false
+                                            }
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Обновить")
+                            }
+                        }
+                    }
+                )
+            }
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { innerPadding ->
-        PullToRefreshBox(
-            isRefreshing = isLoading,
-            onRefresh = refreshGrades,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
@@ -137,7 +179,6 @@ fun BarsScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
                             .padding(24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
@@ -148,7 +189,13 @@ fun BarsScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
-                            onClick = refreshGrades
+                            onClick = {
+                                scope.launch {
+                                    isLoading = true
+                                    barsRepository.refreshGrades()
+                                    isLoading = false
+                                }
+                            }
                         ) {
                             Text("Загрузить оценки")
                         }
@@ -158,7 +205,7 @@ fun BarsScreen(
                 else -> {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 100.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         items(
@@ -175,6 +222,9 @@ fun BarsScreen(
                 }
             }
 
+            if (isLoading && subjects.isNotEmpty()) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.TopCenter))
+            }
         }
     }
 

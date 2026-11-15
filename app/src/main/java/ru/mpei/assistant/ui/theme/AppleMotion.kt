@@ -28,6 +28,8 @@ val AppleCardShape = RoundedCornerShape(20.dp)
 val ApplePillShape = RoundedCornerShape(50)
 val AppleChipShape = RoundedCornerShape(14.dp)
 val AppleBadgeShape = RoundedCornerShape(8.dp)
+val AppleTopMenuShape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)
+val AppleBottomBarShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
 
 /**
  * Пружинный физический отклик нажатия как в iOS (spring physics scale).

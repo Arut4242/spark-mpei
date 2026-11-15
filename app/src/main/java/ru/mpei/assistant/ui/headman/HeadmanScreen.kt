@@ -1,11 +1,15 @@
 package ru.mpei.assistant.ui.headman
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import ru.mpei.assistant.ui.theme.AppleTopMenuShape
 import ru.mpei.assistant.data.model.headman.*
 import ru.mpei.assistant.data.parser.HeadmanParser
 import ru.mpei.assistant.data.repository.HeadmanRepository
@@ -33,10 +37,21 @@ fun HeadmanScreen(repository: HeadmanRepository) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        TabRow(selectedTabIndex = tab) {
-            listOf("Посещаемость", "Список группы", "Отчёты").forEachIndexed { index, title ->
-                Tab(selected = tab == index, onClick = { tab = index }, modifier = Modifier.height(44.dp),
-                    text = { Text(title, maxLines = 1, style = MaterialTheme.typography.labelSmall) })
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 4.dp,
+            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            TabRow(selectedTabIndex = tab, containerColor = Color.Transparent) {
+                listOf("Посещаемость", "Список группы", "Отчёты").forEachIndexed { index, title ->
+                    Tab(selected = tab == index, onClick = { tab = index }, modifier = Modifier.height(44.dp),
+                        text = { Text(title, maxLines = 1, style = MaterialTheme.typography.labelSmall) })
+                }
             }
         }
         Text(group?.name.orEmpty(), style = MaterialTheme.typography.labelLarge,

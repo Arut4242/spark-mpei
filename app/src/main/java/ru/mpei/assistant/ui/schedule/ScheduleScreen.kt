@@ -23,11 +23,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,7 +51,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -87,6 +88,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -106,8 +108,11 @@ import ru.mpei.assistant.data.local.SessionStorage
 import ru.mpei.assistant.data.model.schedule.Lesson
 import ru.mpei.assistant.data.model.schedule.SearchEntity
 import ru.mpei.assistant.data.repository.ScheduleRepository
+import androidx.compose.ui.graphics.RectangleShape
+import ru.mpei.assistant.ui.theme.AppleBlue
 import ru.mpei.assistant.ui.theme.AppleCardShape
 import ru.mpei.assistant.ui.theme.ApplePillShape
+import ru.mpei.assistant.ui.theme.AppleTopMenuShape
 import ru.mpei.assistant.ui.theme.appleClickable
 import ru.mpei.assistant.ui.theme.appleCombinedClickable
 import ru.mpei.assistant.ui.theme.detectTapAndDragAfterLongPress
@@ -184,6 +189,10 @@ fun ScheduleScreen(
     val itemWidths = remember { mutableMapOf<String, Float>() }
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
+    var topBarsHeightPx by remember { mutableIntStateOf(0) }
+    val topBarsHeightDp = remember(topBarsHeightPx) {
+        if (topBarsHeightPx > 0) with(density) { topBarsHeightPx.toDp() } else 200.dp
+    }
 
     LaunchedEffect(favorites) {
         if (draggedItem == null) {
@@ -256,8 +265,9 @@ fun ScheduleScreen(
     // Horizontal pager for swiping between Monday..Saturday (pages 0..5)
     val pagerState = rememberPagerState(initialPage = initialWeekAndDay.second) { 6 }
 
-    // Synchronous derived state for day selection
+    // Synchronous derived states for day selection and today button visibility
     val selectedDayIndex by remember { derivedStateOf { pagerState.currentPage } }
+    val showTodayButton by remember { derivedStateOf { weekOffset != 0 } }
 
     // When lessons are loaded from database, jump to the nearest upcoming lesson
     var hasAppliedUpcomingJump by remember { mutableStateOf(false) }
@@ -291,6 +301,7 @@ fun ScheduleScreen(
     // Formatters
     val dateApiFormat = remember { SimpleDateFormat("yyyy.MM.dd", Locale.getDefault()) }
     val dayNumberFormat = remember { SimpleDateFormat("d", Locale.getDefault()) }
+    val monthTitleFormat = remember { SimpleDateFormat("d MMMM", Locale("ru")) }
 
     // Compute Monday of the selected week
     val currentMonday = remember(weekOffset) {
@@ -338,16 +349,29 @@ fun ScheduleScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(bottom = 4.dp)
+            ) {
+                TopAppBar(
+                        windowInsets = WindowInsets(0, 0, 0, 0),
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = Color.Transparent
+                        ),
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .clip(ApplePillShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .border(
+                                width = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                shape = ApplePillShape
+                            )
                             .appleClickable { showGroupDialog = true }
                             .padding(horizontal = 14.dp, vertical = 6.dp)
                     ) {
@@ -387,6 +411,11 @@ fun ScheduleScreen(
                                     if (isFavoritesBarExpanded) Color(0xFFFFB300).copy(alpha = 0.18f)
                                     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                                 )
+                                .border(
+                                    width = 0.5.dp,
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                    shape = CircleShape
+                                )
                                 .appleClickable {
                                     if (favorites.isEmpty() && currentGroupId != -1L && !currentGroupName.isNullOrBlank()) {
                                         val currentEntity = SearchEntity(
@@ -424,6 +453,11 @@ fun ScheduleScreen(
                                 .size(38.dp)
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .border(
+                                    width = 0.5.dp,
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                    shape = CircleShape
+                                )
                                 .appleClickable {
                                     val now = weekDays.getOrElse(pagerState.currentPage) { weekDays[0] }
                                     DatePickerDialog(
@@ -474,14 +508,7 @@ fun ScheduleScreen(
                     }
                 }
             )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
+
             // Quick favorites horizontal switcher bar
             AnimatedVisibility(
                 visible = isFavoritesBarExpanded && (favorites.isNotEmpty() || currentGroupId != -1L),
@@ -660,198 +687,70 @@ fun ScheduleScreen(
                 }
             }
 
-            if (currentGroupId == -1L) {
-                // No group selected
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Button(onClick = { showGroupDialog = true }) {
-                        Text("Выбрать группу")
-                    }
+            AnimatedVisibility(
+                visible = isRefreshing,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = Color.Transparent
+                )
+            }
+        }
+    },
+    snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { innerPadding ->
+        if (currentGroupId == -1L) {
+            // No group selected
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.Center
+            ) {
+                Button(onClick = { showGroupDialog = true }) {
+                    Text("Выбрать группу")
                 }
-            } else {
-                // Week Switcher Panel (swipeable)
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxWidth()
+            }
+        } else {
+            var datesPanelHeightPx by remember { mutableIntStateOf(0) }
+            var floatingControlsHeightPx by remember { mutableIntStateOf(0) }
+            val density = LocalDensity.current
+            val datesPanelHeightDp = remember(datesPanelHeightPx, density) {
+                if (datesPanelHeightPx > 0) with(density) { datesPanelHeightPx.toDp() }
+                else 100.dp
+            }
+            val floatingControlsHeightDp = remember(floatingControlsHeightPx, density) {
+                if (floatingControlsHeightPx > 0) with(density) { floatingControlsHeightPx.toDp() }
+                else if (showTodayButton) 138.dp else 104.dp
+            }
+            // Clip schedule at the vertical middle of the dates panel so items never emerge from the top
+            val clipOffsetDp = remember(datesPanelHeightDp) { 4.dp + datesPanelHeightDp / 2 }
+            val topContentPadding = remember(floatingControlsHeightDp, clipOffsetDp) {
+                if (floatingControlsHeightDp > clipOffsetDp) floatingControlsHeightDp - clipOffsetDp + 8.dp else 8.dp
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = innerPadding.calculateTopPadding())
+            ) {
+                // Swipeable schedule list clipped at the middle of the dates panel
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = clipOffsetDp)
+                        .clipToBounds()
                 ) {
-                    Column(modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)) {
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            HorizontalPager(
-                                state = weekPagerState,
-                                modifier = Modifier.fillMaxWidth(),
-                                key = { it }
-                            ) { page ->
-                                val pageOffset = page - BASE_WEEK_PAGE
-                                val pageMonday = remember(pageOffset) {
-                                    val cal = Calendar.getInstance()
-                                    cal.firstDayOfWeek = Calendar.MONDAY
-                                    val dow = cal.get(Calendar.DAY_OF_WEEK)
-                                    val diff = if (dow == Calendar.SUNDAY) 6 else dow - Calendar.MONDAY
-                                    cal.add(Calendar.DAY_OF_YEAR, -diff)
-                                    cal.add(Calendar.WEEK_OF_YEAR, pageOffset)
-                                    cal.set(Calendar.HOUR_OF_DAY, 0)
-                                    cal.set(Calendar.MINUTE, 0)
-                                    cal.set(Calendar.SECOND, 0)
-                                    cal.set(Calendar.MILLISECOND, 0)
-                                    cal
-                                }
-                                val pageWeekDays = remember(pageMonday) {
-                                    (0..5).map { dayIdx ->
-                                        val dayCal = pageMonday.clone() as Calendar
-                                        dayCal.add(Calendar.DAY_OF_YEAR, dayIdx)
-                                        dayCal
-                                    }
-                                }
-                                val pageWeekNumber = remember(pageMonday) { getSemesterWeekNumber(pageMonday) }
-                                val pageDayChips = remember(pageWeekDays, todayString) {
-                                    pageWeekDays.mapIndexed { index, dayCal ->
-                                        DayChipUiModel(
-                                            index = index,
-                                            dayName = DAY_NAMES.getOrElse(index) { "" },
-                                            dayNumber = dayNumberFormat.format(dayCal.time),
-                                            isToday = dateApiFormat.format(dayCal.time) == todayString
-                                        )
-                                    }
-                                }
-
-                                Column(modifier = Modifier.padding(horizontal = 12.dp)) {
-                                    // Semester week number, padded to avoid fixed navigation buttons
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(min = 44.dp)
-                                            .padding(horizontal = 84.dp),
-                                        verticalArrangement = Arrangement.Center,
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text(
-                                            text = "$pageWeekNumber неделя",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.height(10.dp))
-
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        pageDayChips.forEach { chip ->
-                                            DayChipItem(
-                                                chip = chip,
-                                                isSelected = (page == weekPagerState.currentPage) && (chip.index == selectedDayIndex),
-                                                onClick = {
-                                                    scope.launch {
-                                                        if (page != weekPagerState.currentPage) {
-                                                            weekPagerState.animateScrollToPage(page)
-                                                        }
-                                                        pagerState.animateScrollToPage(chip.index)
-                                                    }
-                                                },
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Fixed Left Arrow Button (never moves on swipe)
-                            Box(
-                                modifier = Modifier
-                                    .padding(start = 12.dp, top = 4.dp)
-                                    .align(Alignment.TopStart)
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                    .appleClickable {
-                                        scope.launch {
-                                            weekPagerState.animateScrollToPage(weekPagerState.currentPage - 1)
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Предыдущая неделя",
-                                    tint = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-
-                            // Return to the current week and day.
-                            Box(
-                                modifier = Modifier
-                                    .padding(start = 52.dp, top = 4.dp)
-                                    .align(Alignment.TopStart)
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                    .appleClickable {
-                                        scope.launch {
-                                            weekPagerState.animateScrollToPage(BASE_WEEK_PAGE)
-                                            val currentDay = Calendar.getInstance().get(Calendar.DAY_OF_WEEK)
-                                            val targetIdx = if (currentDay in 2..7) currentDay - 2 else 0
-                                            pagerState.animateScrollToPage(targetIdx)
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.Home,
-                                    contentDescription = "Вернуться к сегодня",
-                                    tint = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-
-                            // Fixed Right Arrow Button (never moves on swipe)
-                            Box(
-                                modifier = Modifier
-                                    .padding(end = 12.dp, top = 4.dp)
-                                    .align(Alignment.TopEnd)
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                    .appleClickable {
-                                        scope.launch {
-                                            weekPagerState.animateScrollToPage(weekPagerState.currentPage + 1)
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = "Следующая неделя",
-                                    tint = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
-
-                AnimatedVisibility(
-                    visible = isRefreshing,
-                    enter = fadeIn() + expandVertically(),
-                    exit = fadeOut() + shrinkVertically()
-                ) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(2.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = Color.Transparent
-                    )
-                }
-
-                // Swipeable horizontal pager across the 6 days of the week (Mon..Sat)
-                HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier.fillMaxSize(),
-                    key = { pageIndex -> pageIndex }
-                ) { pageIndex ->
+                    HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier.fillMaxSize(),
+                        key = { pageIndex -> pageIndex }
+                    ) { pageIndex ->
                     val pageCal = weekDays.getOrElse(pageIndex) { weekDays[0] }
                     val pageDateString = remember(pageCal) { dateApiFormat.format(pageCal.time) }
                     val pageLessons = remember(lessonsByDate, pageDateString) {
@@ -865,7 +764,7 @@ fun ScheduleScreen(
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(24.dp),
+                                    .padding(start = 24.dp, end = 24.dp, top = topContentPadding + 16.dp, bottom = 100.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Card(
@@ -928,7 +827,7 @@ fun ScheduleScreen(
 
                             LazyColumn(
                                 modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(16.dp),
+                                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = topContentPadding, bottom = 100.dp),
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 items(
@@ -977,6 +876,167 @@ fun ScheduleScreen(
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Floating Controls Overlay (Dates panel + return to today button)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .onSizeChanged { size ->
+                            floatingControlsHeightPx = size.height
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Week Switcher Panel - Standalone rounded panel (island)
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 4.dp)
+                            .onSizeChanged { size ->
+                                datesPanelHeightPx = size.height
+                            },
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 2.dp,
+                        shadowElevation = 4.dp,
+                        border = BorderStroke(
+                            width = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                        )
+                    ) {
+                        HorizontalPager(
+                            state = weekPagerState,
+                            modifier = Modifier.fillMaxWidth(),
+                            key = { it }
+                        ) { page ->
+                            val pageOffset = page - BASE_WEEK_PAGE
+                            val pageMonday = remember(pageOffset) {
+                                val cal = Calendar.getInstance()
+                                cal.firstDayOfWeek = Calendar.MONDAY
+                                val dow = cal.get(Calendar.DAY_OF_WEEK)
+                                val diff = if (dow == Calendar.SUNDAY) 6 else dow - Calendar.MONDAY
+                                cal.add(Calendar.DAY_OF_YEAR, -diff)
+                                cal.add(Calendar.WEEK_OF_YEAR, pageOffset)
+                                cal.set(Calendar.HOUR_OF_DAY, 0)
+                                cal.set(Calendar.MINUTE, 0)
+                                cal.set(Calendar.SECOND, 0)
+                                cal.set(Calendar.MILLISECOND, 0)
+                                cal
+                            }
+                            val pageWeekDays = remember(pageMonday) {
+                                (0..5).map { dayIdx ->
+                                    val dayCal = pageMonday.clone() as Calendar
+                                    dayCal.add(Calendar.DAY_OF_YEAR, dayIdx)
+                                    dayCal
+                                }
+                            }
+                            val pageWeekNumber = remember(pageMonday) { getSemesterWeekNumber(pageMonday) }
+                            val pageMonthName = remember(pageMonday) {
+                                SimpleDateFormat("LLLL", Locale("ru")).format(pageMonday.time)
+                                    .replaceFirstChar { it.uppercase() }
+                            }
+                            val pageDayChips = remember(pageWeekDays, todayString) {
+                                pageWeekDays.mapIndexed { index, dayCal ->
+                                    DayChipUiModel(
+                                        index = index,
+                                        dayName = DAY_NAMES.getOrElse(index) { "" },
+                                        dayNumber = dayNumberFormat.format(dayCal.time),
+                                        isToday = dateApiFormat.format(dayCal.time) == todayString
+                                    )
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                // Week badge - centered, sleek, no arrows, no "число - число"
+                                Box(
+                                    modifier = Modifier
+                                        .padding(bottom = 6.dp)
+                                        .clip(ApplePillShape)
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                        .padding(horizontal = 12.dp, vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        text = "$pageMonthName · $pageWeekNumber неделя",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    pageDayChips.forEach { chip ->
+                                        DayChipItem(
+                                            chip = chip,
+                                            isSelected = (page == weekPagerState.currentPage) && (chip.index == selectedDayIndex),
+                                            onClick = {
+                                                scope.launch {
+                                                    if (page != weekPagerState.currentPage) {
+                                                        weekPagerState.animateScrollToPage(page)
+                                                    }
+                                                    pagerState.animateScrollToPage(chip.index)
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Quick "Today" jump button (Standalone smaller capsule with subtle transparency)
+                    AnimatedVisibility(
+                        visible = showTodayButton,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically(),
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = AppleBlue.copy(alpha = 0.85f),
+                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.25f)),
+                            shadowElevation = 3.dp,
+                            modifier = Modifier
+                                .padding(top = 2.dp, bottom = 4.dp)
+                                .appleClickable {
+                                    scope.launch {
+                                        weekPagerState.animateScrollToPage(BASE_WEEK_PAGE)
+                                        val currentDay = todayCal.get(Calendar.DAY_OF_WEEK)
+                                        val targetIdx = if (currentDay in 2..7) currentDay - 2 else 0
+                                        pagerState.animateScrollToPage(targetIdx)
+                                    }
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Today,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    "Вернуться к сегодня",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White
+                                )
                             }
                         }
                     }
