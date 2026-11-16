@@ -93,6 +93,9 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
         buildConfig = true
     }
     packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/NOTICE.md"
@@ -140,7 +143,7 @@ dependencies {
 
     // Security & Encrypted Preferences
     implementation(libs.androidx.security.crypto)
-    implementation("net.zetetic:sqlcipher-android:4.6.0")
+    implementation("net.zetetic:sqlcipher-android:4.6.1")
     implementation("androidx.sqlite:sqlite-ktx:2.4.0")
 
     // Background workers & DataStore
