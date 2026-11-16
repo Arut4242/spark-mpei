@@ -144,4 +144,12 @@ YLa/czklbyuyEwDIBfz01hQDOYlowkk7aUvQ/gIP2u61y/twkmo+4DN7A5I=
         // 4. Запрещён автоматический откат на незащищённый стандартный сокет
         assertEquals("false", props.getProperty("mail.imaps.ssl.socketFactory.fallback"))
     }
+
+    @Test
+    fun testVerifyMpeiCorporateChainRejectsForgedCertificates() {
+        val mitmCert = parsePem(MITM_SELF_SIGNED_MPEI_CERT_PEM)
+        assertThrows(CertificateException::class.java) {
+            MpeiCertificates.verifyMpeiCorporateChain(arrayOf(mitmCert))
+        }
+    }
 }

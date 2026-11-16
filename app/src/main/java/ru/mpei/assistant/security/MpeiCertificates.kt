@@ -127,11 +127,9 @@ a+s=
                     throw CertificateException("Цепочка сертификатов сервера пуста")
                 }
 
-                // 1. Криптографическая валидация всей цепочки сертификатов
-                delegate.checkServerTrusted(chain, authType)
-
-                // 2. Строгая проверка соответствия хоста (mail.mpei.ru) в SAN или CN конечного сертификата (RFC 6125)
                 val leaf = chain[0]
+
+                // 1. Строгая проверка соответствия хоста (mail.mpei.ru) в SAN или CN конечного сертификата (RFC 6125)
                 val sans = try {
                     leaf.subjectAlternativeNames?.mapNotNull { it.getOrNull(1)?.toString() } ?: emptyList()
                 } catch (_: Exception) {
@@ -161,9 +159,86 @@ a+s=
                 if (!matchesHost) {
                     throw CertificateException("Сертификат сервера (${leaf.subjectX500Principal.name}) не соответствует имени хоста '$imapHost' ни в SAN, ни в CN")
                 }
+
+                // 2. Валидация криптографической цепочки сертификатов
+                // Сначала пробуем системный валидатор (на случай стандартных системных или публичных CA)
+                try {
+                    delegate.checkServerTrusted(chain, authType)
+                    return
+                } catch (systemEx: Exception) {
+                    ru.mpei.assistant.util.AppLogger.d("MPEI_TLS", "System TrustManager rejected chain (${systemEx.message}). Verifying against pinned MPEI corporate CA...")
+                }
+
+                // Если системный валидатор отклонил цепочку (в частности, Android Conscrypt отклоняет SHA-1 подписи
+                // корпоративных SubCA с ошибкой 'Unacceptable certificate'), проводим прямую криптографическую валидацию
+                // по закреплённым официальным сертификатам НИУ «МЭИ».
+                verifyMpeiCorporateChain(chain)
             }
 
-            override fun getAcceptedIssuers(): Array<X509Certificate> = delegate.acceptedIssuers
+            override fun getAcceptedIssuers(): Array<X509Certificate> {
+                val mpeiCerts = getMpeiCertificates().toTypedArray()
+                return delegate.acceptedIssuers + mpeiCerts
+            }
+        }
+    }
+
+    /**
+     * Прямая криптографическая проверка цепочки сертификатов по закреплённым Root CA и Intermediate SubCA НИУ «МЭИ».
+     */
+    fun verifyMpeiCorporateChain(chain: Array<out X509Certificate>) {
+        if (chain.isEmpty()) {
+            throw CertificateException("Цепочка сертификатов сервера пуста")
+        }
+
+        val leaf = chain[0]
+        leaf.checkValidity()
+
+        val mpeiCerts = getMpeiCertificates()
+        val rootCa = mpeiCerts[0]
+        val intermediateCa = mpeiCerts[1]
+
+        rootCa.checkValidity()
+        intermediateCa.checkValidity()
+
+        // Проверяем подпись промежуточного центра МЭИ корневым центром МЭИ
+        intermediateCa.verify(rootCa.publicKey)
+
+        var verified = false
+        var lastError: Exception? = null
+
+        // 1. Проверяем подпись конечного сертификата публичным ключом промежуточного CA
+        try {
+            leaf.verify(intermediateCa.publicKey)
+            verified = true
+        } catch (e: Exception) {
+            lastError = e
+        }
+
+        // 2. Либо напрямую корневым CA
+        if (!verified) {
+            try {
+                leaf.verify(rootCa.publicKey)
+                verified = true
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+
+        // 3. Если сервер прислал промежуточный сертификат в цепочке, проверяем и его
+        if (!verified && chain.size > 1) {
+            val serverIntermediate = chain[1]
+            try {
+                serverIntermediate.checkValidity()
+                serverIntermediate.verify(rootCa.publicKey)
+                leaf.verify(serverIntermediate.publicKey)
+                verified = true
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+
+        if (!verified) {
+            throw CertificateException("Сертификат сервера (${leaf.subjectX500Principal.name}) не подписан доверенным удостоверяющим центром НИУ «МЭИ»", lastError)
         }
     }
 
