@@ -82,6 +82,15 @@ class BarsWebClient(
         }
         .build()
 
+    data class CachedHtml(
+        val body: String,
+        val lastModified: String?,
+        val etag: String?,
+        val timestamp: Long
+    )
+
+    private val httpCache = java.util.concurrent.ConcurrentHashMap<String, CachedHtml>()
+
     suspend fun fetchHtml(url: String = BARS_BASE_URL): Result<String> = withContext(Dispatchers.IO) {
         val parsedUri = url.toHttpUrlOrNull()
         if (parsedUri == null || !parsedUri.isHttps || !parsedUri.host.equals(allowedHost, ignoreCase = true)) {
@@ -95,11 +104,22 @@ class BarsWebClient(
             return@withContext Result.failure(IllegalStateException("Требуется авторизация в БАРС"))
         }
 
-        val request = Request.Builder()
+        val cached = httpCache[url]
+        val reqBuilder = Request.Builder()
             .url(url)
             .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
             .addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .build()
+
+        // Поддержка условных HTTP-запросов (If-Modified-Since / If-None-Match)
+        if (cached != null) {
+            if (!cached.lastModified.isNullOrBlank()) {
+                reqBuilder.addHeader("If-Modified-Since", cached.lastModified)
+            }
+            if (!cached.etag.isNullOrBlank()) {
+                reqBuilder.addHeader("If-None-Match", cached.etag)
+            }
+        }
+        val request = reqBuilder.build()
 
         var lastException: Exception? = null
         for (attempt in 1..3) {
@@ -107,7 +127,17 @@ class BarsWebClient(
                 AppLogger.i("BARS_WEB", "fetchHtml (attempt $attempt/3): requesting $url (cookies len=${cookies.length})")
                 client.newCall(request).execute().use { response ->
                     AppLogger.i("BARS_WEB", "fetchHtml response: code=${response.code} for $url")
+
+                    // Сервер вернул 304 Not Modified — отдаем данные из кэша без скачивания тела
+                    if (response.code == 304 && cached != null) {
+                        AppLogger.i("BARS_WEB", "fetchHtml 304 Not Modified: данные не изменились, используем кэш")
+                        return@withContext Result.success(cached.body)
+                    }
+
                     if (!response.isSuccessful) {
+                        if (response.code in 500..599) {
+                            sessionStorage.lastBarsErrorTime = System.currentTimeMillis()
+                        }
                         AppLogger.e("BARS_WEB", "Server error code=${response.code} for $url")
                         return@withContext Result.failure(IOException("Ошибка сервера БАРС: ${response.code}"))
                     }
@@ -121,13 +151,19 @@ class BarsWebClient(
                         return@withContext Result.failure(IllegalStateException("Сессия БАРС истекла. Пожалуйста, выполните вход повторно."))
                     }
 
+                    // Сохраняем заголовки кэширования при их наличии в ответе сервера
+                    val lastModified = response.header("Last-Modified")
+                    val etag = response.header("ETag")
+                    httpCache[url] = CachedHtml(body, lastModified, etag, System.currentTimeMillis())
+
                     return@withContext Result.success(body)
                 }
             } catch (e: Exception) {
                 lastException = e
                 AppLogger.w("BARS_WEB", "Network error requesting $url (attempt $attempt/3): ${e.message}")
                 if (attempt < 3 && isRetryableNetworkError(e)) {
-                    delay(200L * attempt)
+                    // Экспоненциальная задержка (500ms, 1000ms) во избежание перегрузки сервера
+                    delay(500L * (1 shl (attempt - 1)))
                     continue
                 }
                 break
@@ -214,7 +250,7 @@ class BarsWebClient(
                 lastException = e
                 AppLogger.w("BARS_WEB", "requestData attempt $attempt/3 failed for $target: ${e.message}")
                 if (attempt < 3 && isRetryableNetworkError(e)) {
-                    delay(200L * attempt)
+                    delay(500L * (1 shl (attempt - 1)))
                     continue
                 }
                 break

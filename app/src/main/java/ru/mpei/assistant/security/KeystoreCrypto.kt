@@ -9,37 +9,26 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
-/**
- * Криптографический модуль для шифрования чувствительных данных локальной БД Room
- * (тела писем, оценки, задолженности) с использованием аппаратного Android Keystore (AES-256 GCM).
- */
-object KeystoreCrypto {
+class CryptoException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
-    private const val TAG = "KEYSTORE_CRYPTO"
-    private const val KEY_ALIAS = "spark_db_encryption_key"
-    private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-    private const val TRANSFORMATION = "AES/GCM/NoPadding"
-    private const val GCM_TAG_LENGTH = 128
-    private const val PREFIX = "ENC:"
+interface KeyProvider {
+    fun getKey(): SecretKey
+}
 
-    // Fallback-ключ исключительно для автономных Unit-тестов на стандартной JVM без AndroidKeyStore
-    private val jvmTestFallbackKey: SecretKey by lazy {
-        val testBytes = ByteArray(32) { (it * 7 + 13).toByte() }
-        SecretKeySpec(testBytes, "AES")
-    }
-
-    private fun getOrCreateKey(): SecretKey {
+internal class AndroidKeystoreKeyProvider(
+    private val keyAlias: String = KeystoreCrypto.KEY_ALIAS
+) : KeyProvider {
+    override fun getKey(): SecretKey {
         return try {
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            if (!keyStore.containsAlias(KEY_ALIAS)) {
+            val keyStore = KeyStore.getInstance(KeystoreCrypto.ANDROID_KEYSTORE).apply { load(null) }
+            if (!keyStore.containsAlias(keyAlias)) {
                 val keyGenerator = KeyGenerator.getInstance(
                     KeyProperties.KEY_ALGORITHM_AES,
-                    ANDROID_KEYSTORE
+                    KeystoreCrypto.ANDROID_KEYSTORE
                 )
                 val keyGenSpec = KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
+                    keyAlias,
                     KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
                 )
                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
@@ -49,23 +38,58 @@ object KeystoreCrypto {
                 keyGenerator.init(keyGenSpec)
                 keyGenerator.generateKey()
             } else {
-                val entry = keyStore.getEntry(KEY_ALIAS, null) as KeyStore.SecretKeyEntry
+                val entry = keyStore.getEntry(keyAlias, null) as? KeyStore.SecretKeyEntry
+                    ?: throw CryptoException("Ключ '$keyAlias' в AndroidKeyStore не является SecretKey или повреждён")
                 entry.secretKey
             }
-        } catch (_: Throwable) {
-            // В среде Unit-тестов (JVM) провайдер AndroidKeyStore недоступен
-            jvmTestFallbackKey
+        } catch (e: Exception) {
+            AppLogger.e("KEYSTORE_CRYPTO", "AndroidKeyStore hardware error: key unavailable", e)
+            throw CryptoException("Аппаратное хранилище AndroidKeyStore недоступно. Операция прервана в целях безопасности.", e)
         }
+    }
+}
+
+/**
+ * Криптографический модуль для шифрования чувствительных данных
+ * с использованием аппаратного Android Keystore (AES-256 GCM).
+ *
+ * Безопасность:
+ * - В production отсутствует статический тестовый ключ (jvmTestFallbackKey удалён).
+ * - При недоступности Keystore операция прерывается исключением CryptoException.
+ * - При ошибке шифрования возврат открытого текста строго запрещён.
+ */
+object KeystoreCrypto {
+
+    private const val TAG = "KEYSTORE_CRYPTO"
+    internal const val KEY_ALIAS = "spark_db_encryption_key"
+    internal const val ANDROID_KEYSTORE = "AndroidKeyStore"
+    private const val TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val GCM_TAG_LENGTH = 128
+    private const val PREFIX = "ENC:"
+
+    @Volatile
+    private var keyProvider: KeyProvider = AndroidKeystoreKeyProvider()
+
+    /**
+     * Позволяет установить альтернативный KeyProvider исключительно в Unit-тестах на JVM.
+     * В production-коде не вызывается (дефолтный провайдер использует аппаратный AndroidKeyStore).
+     */
+    @androidx.annotation.VisibleForTesting
+    fun setKeyProviderForTesting(provider: KeyProvider?) {
+        keyProvider = provider ?: AndroidKeystoreKeyProvider()
     }
 
     /**
      * Шифрует открытый текст с использованием AES-256 GCM.
      * Возвращает строку с префиксом "ENC:", содержащую 12-байтовый IV + шифротекст в Base64.
+     *
+     * При сбое шифрования выбрасывает CryptoException. Возврат исходного открытого текста строго запрещён!
      */
+    @Throws(CryptoException::class)
     fun encrypt(plainText: String?): String? {
         if (plainText.isNullOrEmpty()) return plainText
         return try {
-            val secretKey = getOrCreateKey()
+            val secretKey = keyProvider.getKey()
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, secretKey)
             val iv = cipher.iv
@@ -77,23 +101,31 @@ object KeystoreCrypto {
 
             val b64 = Base64.getEncoder().encodeToString(combined)
             PREFIX + b64
+        } catch (e: CryptoException) {
+            AppLogger.e(TAG, "Encryption rejected: Keystore unavailable", e)
+            throw e
         } catch (e: Exception) {
-            AppLogger.e(TAG, "Encryption failed", e)
-            plainText
+            AppLogger.e(TAG, "Encryption failed: sensitive data will NOT be stored in plaintext", e)
+            throw CryptoException("Ошибка шифрования конфиденциальных данных", e)
         }
     }
 
     /**
      * Расшифровывает строку. Если строка не зашифрована (нет префикса "ENC:"),
-     * возвращает её исходное значение (обратная совместимость).
+     * возвращает её исходное значение (обратная совместимость для плавной миграции).
+     *
+     * При ошибке расшифровки возвращает null (но не шифротекст и не повреждённые данные).
      */
     fun decrypt(cipherText: String?): String? {
         if (cipherText.isNullOrEmpty() || !cipherText.startsWith(PREFIX)) return cipherText
         return try {
-            val secretKey = getOrCreateKey()
+            val secretKey = keyProvider.getKey()
             val b64 = cipherText.removePrefix(PREFIX)
             val raw = Base64.getDecoder().decode(b64)
-            if (raw.size <= 12) return cipherText
+            if (raw.size <= 12) {
+                AppLogger.e(TAG, "Decryption error: invalid ciphertext payload size (${raw.size} bytes)")
+                return null
+            }
 
             val iv = ByteArray(12)
             System.arraycopy(raw, 0, iv, 0, 12)
@@ -106,7 +138,7 @@ object KeystoreCrypto {
             String(cipher.doFinal(encryptedBytes), Charsets.UTF_8)
         } catch (e: Exception) {
             AppLogger.e(TAG, "Decryption failed", e)
-            cipherText
+            null
         }
     }
 }

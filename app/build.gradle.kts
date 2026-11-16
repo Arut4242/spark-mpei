@@ -46,14 +46,15 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
         applicationId = "ru.mpei.assistant"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.0.7"
+        versionCode = 10
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
     }
 
     signingConfigs {
@@ -139,6 +140,8 @@ dependencies {
 
     // Security & Encrypted Preferences
     implementation(libs.androidx.security.crypto)
+    implementation("net.zetetic:sqlcipher-android:4.6.0")
+    implementation("androidx.sqlite:sqlite-ktx:2.4.0")
 
     // Background workers & DataStore
     implementation(libs.androidx.work.runtime.ktx)

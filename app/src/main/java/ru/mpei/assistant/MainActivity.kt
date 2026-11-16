@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
 
         val database = AppDatabase.getInstance(this)
         val sessionStorage = SessionStorage(this)
+        sessionStorage.lastAppOpenTime = System.currentTimeMillis()
         val scheduleApi = MpeiScheduleApi.create()
         val barsClient = BarsWebClient(sessionStorage)
 

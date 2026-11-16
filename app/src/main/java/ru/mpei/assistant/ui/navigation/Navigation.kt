@@ -203,18 +203,16 @@ fun MainScreen(
             startDestination = Screen.Schedule.route,
             modifier = Modifier.fillMaxSize(),
             enterTransition = {
-                fadeIn(animationSpec = tween(220, easing = EaseInOutCubic)) +
-                scaleIn(initialScale = 0.985f, animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow))
+                fadeIn(animationSpec = tween(150))
             },
             exitTransition = {
-                fadeOut(animationSpec = tween(180, easing = EaseInOutCubic))
+                fadeOut(animationSpec = tween(100))
             },
             popEnterTransition = {
-                fadeIn(animationSpec = tween(220, easing = EaseInOutCubic)) +
-                scaleIn(initialScale = 0.985f, animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow))
+                fadeIn(animationSpec = tween(150))
             },
             popExitTransition = {
-                fadeOut(animationSpec = tween(180, easing = EaseInOutCubic))
+                fadeOut(animationSpec = tween(100))
             }
         ) {
             composable(Screen.Schedule.route) {
@@ -310,7 +308,9 @@ fun MainScreen(
                         modifier = Modifier
                             .fillMaxHeight()
                             .width(tabWidth)
-                            .offset(x = tabWidth * animatedIndex)
+                            .graphicsLayer {
+                                translationX = (tabWidth * animatedIndex).toPx()
+                            }
                             .padding(horizontal = 2.dp, vertical = 2.dp)
                             .clip(CircleShape)
                             .background(

@@ -38,6 +38,12 @@ data class EmailPageResult(
     val totalMessages: Int
 )
 
+data class InboxStatus(
+    val totalMessages: Int,
+    val unseenCount: Int,
+    val newestUid: Long
+)
+
 class OsepMailClient {
 
     private val mimeMultipartAny = "multipart" + "/" + "*"
@@ -47,75 +53,18 @@ class OsepMailClient {
     private val imapPort = 993
 
     /**
-     * Валидатор сертификатов для mail.mpei.ru.
-     * Почтовый сервер Microsoft Exchange НИУ «МЭИ» использует локальный корпоративный удостоверяющий центр
-     * (CN=public-PUBLICCA-CA, DC=public, DC=mpei, DC=local), отсутствующий в публичном хранилище Android.
-     * Данный TrustManager проверяет валидность сертификата, доверие корневому центру МЭИ и наличие хоста mail.mpei.ru в SAN.
+     * Валидатор сертификатов для mail.mpei.ru на основе официальных доверенных сертификатов НИУ «МЭИ»
+     * (Корневой CA: CN=MPEI (TU) и Промежуточный CA: CN=public-PUBLICCA-CA).
      */
-    private val mpeiTrustManager = object : X509TrustManager {
-        private val defaultTm: X509TrustManager? = try {
-            val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
-            tmf.init(null as java.security.KeyStore?)
-            tmf.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
-        } catch (_: Exception) {
-            null
-        }
-
-        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-            defaultTm?.checkClientTrusted(chain, authType)
-        }
-
-        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-            if (chain.isNullOrEmpty()) {
-                throw CertificateException("Цепочка сертификатов пуста")
-            }
-
-            // 1. Попытка стандартной проверки через системные корневые центры Android
-            try {
-                defaultTm?.checkServerTrusted(chain, authType)
-                return
-            } catch (_: Exception) {
-                // Системный TrustManager не содержит локальный CA МЭИ, валидируем официальный сертификат МЭИ
-            }
-
-            val leaf = chain[0]
-            leaf.checkValidity()
-
-            val issuer = leaf.issuerX500Principal.name
-            val subject = leaf.subjectX500Principal.name
-
-            val isMpeiCa = issuer.contains("public-PUBLICCA-CA", ignoreCase = true) ||
-                    (issuer.contains("mpei", ignoreCase = true) && issuer.contains("local", ignoreCase = true))
-
-            val isMpeiServer = subject.contains("mbxcas", ignoreCase = true) ||
-                    subject.contains("mpei", ignoreCase = true)
-
-            val sans = try {
-                leaf.subjectAlternativeNames?.mapNotNull { it.getOrNull(1)?.toString() } ?: emptyList()
-            } catch (_: Exception) {
-                emptyList()
-            }
-
-            val matchesHost = sans.any { it.equals(imapHost, ignoreCase = true) } ||
-                    subject.contains(imapHost, ignoreCase = true)
-
-            if (!isMpeiCa || (!isMpeiServer && !matchesHost)) {
-                throw CertificateException(
-                    "Недопустимый сертификат сервера почты: выдан '$issuer' для '$subject'. Подключение отклонено."
-                )
-            }
-        }
-
-        override fun getAcceptedIssuers(): Array<X509Certificate> =
-            defaultTm?.acceptedIssuers ?: emptyArray()
+    private val mpeiTrustManager by lazy {
+        ru.mpei.assistant.security.MpeiCertificates.createMpeiTrustManager(imapHost)
     }
 
     private fun createSession(): Session {
         val sslContext = try {
-            SSLContext.getInstance("TLS").apply {
-                init(null, arrayOf(mpeiTrustManager), SecureRandom())
-            }
-        } catch (_: Exception) {
+            ru.mpei.assistant.security.MpeiCertificates.createMpeiSslContext(imapHost)
+        } catch (e: Exception) {
+            ru.mpei.assistant.util.AppLogger.e("OSEP_MAIL", "Failed to create MPEI SSL Context", e)
             null
         }
 
@@ -169,18 +118,56 @@ class OsepMailClient {
     }
 
     suspend fun testConnection(login: String, pass: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        var store: IMAPStore? = null
+        var inbox: Folder? = null
         try {
             ru.mpei.assistant.util.AppLogger.i("OSEP_MAIL", "testConnection started")
             val session = createSession()
-            val store = connectStore(session, login, pass)
-            val inbox = store.getFolder("INBOX")
+            store = connectStore(session, login, pass)
+            inbox = store.getFolder("INBOX")
             val exists = inbox.exists()
-            store.close()
             ru.mpei.assistant.util.AppLogger.i("OSEP_MAIL", "testConnection success: INBOX exists=$exists")
             Result.success(exists)
         } catch (e: Exception) {
             ru.mpei.assistant.util.AppLogger.e("OSEP_MAIL", "testConnection failed", e)
             Result.failure(e)
+        } finally {
+            try { inbox?.close(false) } catch (_: Exception) {}
+            try { store?.close() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Быстрая и легковесная проверка папки INBOX без скачивания и разбора тел писем.
+     * Запрашивает только число сообщений, число непрочитанных и UID самого свежего сообщения.
+     */
+    suspend fun checkInboxStatus(login: String, pass: String): Result<InboxStatus> = withContext(Dispatchers.IO) {
+        var store: IMAPStore? = null
+        var inbox: Folder? = null
+        try {
+            ru.mpei.assistant.util.AppLogger.i("OSEP_MAIL", "checkInboxStatus started")
+            val session = createSession()
+            store = connectStore(session, login, pass)
+            inbox = store.getFolder("INBOX")
+            inbox.open(Folder.READ_ONLY)
+
+            val total = inbox.messageCount
+            val unseen = inbox.unreadMessageCount
+            val imapFolder = inbox as? IMAPFolder
+
+            val newestUid = if (total > 0 && imapFolder != null) {
+                val lastMsg = inbox.getMessage(total)
+                imapFolder.getUID(lastMsg)
+            } else 0L
+
+            ru.mpei.assistant.util.AppLogger.i("OSEP_MAIL", "checkInboxStatus result: total=$total, unseen=$unseen, newestUid=$newestUid")
+            Result.success(InboxStatus(total, unseen, newestUid))
+        } catch (e: Exception) {
+            ru.mpei.assistant.util.AppLogger.w("OSEP_MAIL", "checkInboxStatus failed: ${e.message}")
+            Result.failure(e)
+        } finally {
+            try { inbox?.close(false) } catch (_: Exception) {}
+            try { store?.close() } catch (_: Exception) {}
         }
     }
 

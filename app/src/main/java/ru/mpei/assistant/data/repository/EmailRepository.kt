@@ -45,7 +45,7 @@ class EmailRepository(
      */
     private fun encryptEmail(email: EmailMessage): EmailMessage {
         val encBodyText = if (email.bodyText.isNotEmpty()) {
-            KeystoreCrypto.encrypt(email.bodyText) ?: email.bodyText
+            KeystoreCrypto.encrypt(email.bodyText) ?: ""
         } else email.bodyText
         val encBodyHtml = if (!email.bodyHtml.isNullOrEmpty()) {
             KeystoreCrypto.encrypt(email.bodyHtml)
@@ -60,7 +60,7 @@ class EmailRepository(
      * Расшифровывает тело письма при извлечении из базы данных
      */
     private fun decryptEmail(email: EmailMessage): EmailMessage {
-        val decBodyText = KeystoreCrypto.decrypt(email.bodyText) ?: email.bodyText
+        val decBodyText = KeystoreCrypto.decrypt(email.bodyText) ?: "[Ошибка расшифровки сообщения]"
         val decBodyHtml = KeystoreCrypto.decrypt(email.bodyHtml)
         return email.copy(
             bodyText = decBodyText,

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/mpei_root_ca" />
+            <certificates src="@raw/mpei_intermediate_ca" />
+        </trust-anchors>
+    </base-config>
+    <domain-config>
+        <domain includeSubdomains="true">mpei.ru</domain>
+        <domain includeSubdomains="true">mpei.local</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/mpei_root_ca" />
+            <certificates src="@raw/mpei_intermediate_ca" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

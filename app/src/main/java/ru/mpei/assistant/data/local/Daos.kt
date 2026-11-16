@@ -28,6 +28,12 @@ interface BarsDao {
 
     @Query("DELETE FROM bars_subjects")
     suspend fun clearAll()
+
+    @Transaction
+    suspend fun replaceAll(subjects: List<BarsSubject>) {
+        clearAll()
+        insertAll(subjects)
+    }
 }
 
 @Dao

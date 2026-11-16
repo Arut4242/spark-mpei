@@ -15,8 +15,9 @@ import ru.mpei.assistant.util.AppLogger
 import java.util.concurrent.TimeUnit
 
 /**
- * Фоновый воркер для проверки почты ОСЭП МЭИ с интервалом 30 минут.
- * Прекращает фоновые опросы при неудачной аутентификации для защиты от блокировки аккаунта.
+ * Фоновый воркер для проверки почты ОСЭП МЭИ с базовым интервалом 1 час.
+ * Использует легковесную проверку статуса папки (без загрузки тел), jitter 5-15 мин,
+ * паузу для неактивных пользователей (>7 дней) и прекращает опросы при ошибках аутентификации.
  */
 class EmailCheckWorker(
     private val context: Context,
@@ -26,19 +27,69 @@ class EmailCheckWorker(
     override suspend fun doWork(): Result {
         val storage = SessionStorage(context)
         val db = AppDatabase.getInstance(context)
+        val now = System.currentTimeMillis()
 
-        AppLogger.i("EMAIL_WORKER", "Запуск проверки почты ОСЭП МЭИ (интервал 30 мин)...")
+        AppLogger.i("EMAIL_WORKER", "Запуск проверки почты ОСЭП МЭИ (базовый интервал 1 час)...")
         var shouldReschedule = true
 
         try {
             if (storage.isEmailNotificationsEnabled && storage.isOsepAuthorized) {
+                // 1. Приостановка при неактивности пользователя (> 7 дней -> не чаще 1 раза в сутки)
+                val lastOpen = storage.lastAppOpenTime
+                val isInactiveUser = lastOpen > 0L && (now - lastOpen > 7L * 24 * 60 * 60 * 1000L)
+                if (isInactiveUser) {
+                    val lastSync = storage.lastEmailSyncTime
+                    if (now - lastSync < 24L * 60 * 60 * 1000L) {
+                        AppLogger.i(
+                            "EMAIL_WORKER",
+                            "Пользователь не открывал приложение >7 дней. Пропуск проверки почты (лимит 1 раз в сутки для неактивных)."
+                        )
+                        return Result.success()
+                    }
+                }
+
+                val login = storage.osepLogin
+                val pass = storage.osepPassword
+                val mailClient = ru.mpei.assistant.data.network.OsepMailClient()
+
+                // 2. Быстрая проверка заголовков без скачивания (unseenMessageCount / newest UID)
+                if (!login.isNullOrBlank() && !pass.isNullOrBlank()) {
+                    val statusRes = mailClient.checkInboxStatus(login, pass)
+                    if (statusRes.isSuccess) {
+                        val status = statusRes.getOrThrow()
+                        val lastUid = storage.lastEmailNewestUid
+                        val lastUnread = storage.lastEmailUnreadCount
+
+                        if (status.newestUid > 0L && status.newestUid == lastUid && status.unseenCount == lastUnread) {
+                            AppLogger.i(
+                                "EMAIL_WORKER",
+                                "Быстрая проверка IMAP: новых писем нет (newest UID=$lastUid, unseen=$lastUnread). Завершено без скачивания тел."
+                            )
+                            storage.lastEmailSyncTime = now
+                            return Result.success()
+                        }
+                        storage.lastEmailNewestUid = status.newestUid
+                        storage.lastEmailUnreadCount = status.unseenCount
+                    } else {
+                        val ex = statusRes.exceptionOrNull()
+                        if (ex is javax.mail.AuthenticationFailedException) {
+                            AppLogger.w("EMAIL_WORKER", "Неверный логин или пароль почты. Остановка фоновой работы во избежание блокировки.")
+                            shouldReschedule = false
+                            return Result.success()
+                        }
+                    }
+                }
+
+                // 3. Скачивание при наличии изменений
                 val emailRepo = EmailRepository(
                     emailDao = db.emailDao(),
                     sessionStorage = storage,
+                    mailClient = mailClient,
                     appContext = context
                 )
                 val result = emailRepo.refreshEmails(notifyOnNew = true, context = context)
                 if (result.isSuccess) {
+                    storage.lastEmailSyncTime = now
                     AppLogger.i("EMAIL_WORKER", "Проверка почты успешно завершена")
                 } else {
                     val ex = result.exceptionOrNull()
@@ -68,7 +119,7 @@ class EmailCheckWorker(
 
     companion object {
         const val WORK_NAME = "email_sync_work"
-        const val INTERVAL_MINUTES = 30L
+        const val INTERVAL_MINUTES = 60L // 1 час
 
         fun scheduleNext(context: Context) {
             val storage = SessionStorage(context)
@@ -81,8 +132,12 @@ class EmailCheckWorker(
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
 
+            // Рандомизация смещения (Jitter 5..15 минут) во избежание thundering herd
+            val jitterMinutes = (5L..15L).random()
+            val totalDelay = INTERVAL_MINUTES + jitterMinutes
+
             val emailRequest = OneTimeWorkRequestBuilder<EmailCheckWorker>()
-                .setInitialDelay(INTERVAL_MINUTES, TimeUnit.MINUTES)
+                .setInitialDelay(totalDelay, TimeUnit.MINUTES)
                 .setConstraints(constraints)
                 .build()
 
@@ -91,7 +146,7 @@ class EmailCheckWorker(
                 ExistingWorkPolicy.REPLACE,
                 emailRequest
             )
-            AppLogger.d("EMAIL_WORKER", "Следующая проверка почты запланирована через $INTERVAL_MINUTES мин")
+            AppLogger.d("EMAIL_WORKER", "Следующая проверка почты запланирована через $totalDelay мин (базовый $INTERVAL_MINUTES + jitter $jitterMinutes мин)")
         }
 
         fun start(context: Context) {
@@ -101,8 +156,11 @@ class EmailCheckWorker(
                     .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build()
 
+                val jitterMinutes = (5L..15L).random()
+                val totalDelay = INTERVAL_MINUTES + jitterMinutes
+
                 val emailRequest = OneTimeWorkRequestBuilder<EmailCheckWorker>()
-                    .setInitialDelay(INTERVAL_MINUTES, TimeUnit.MINUTES)
+                    .setInitialDelay(totalDelay, TimeUnit.MINUTES)
                     .setConstraints(constraints)
                     .build()
 
@@ -111,7 +169,7 @@ class EmailCheckWorker(
                     ExistingWorkPolicy.KEEP,
                     emailRequest
                 )
-                AppLogger.d("EMAIL_WORKER", "Цепочка проверки почты запущена (интервал $INTERVAL_MINUTES мин)")
+                AppLogger.d("EMAIL_WORKER", "Цепочка проверки почты запущена (интервал $totalDelay мин)")
             }
         }
 

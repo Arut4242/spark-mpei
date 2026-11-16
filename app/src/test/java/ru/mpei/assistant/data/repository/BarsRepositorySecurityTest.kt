@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -18,6 +19,7 @@ import ru.mpei.assistant.data.model.absence.SubjectAbsence
 import ru.mpei.assistant.data.model.bars.BarsSubject
 import ru.mpei.assistant.data.network.BarsWebClient
 import ru.mpei.assistant.security.KeystoreCrypto
+import ru.mpei.assistant.test.JvmTestKeyProvider
 
 class BarsRepositorySecurityTest {
 
@@ -88,10 +90,16 @@ class BarsRepositorySecurityTest {
 
     @Before
     fun setup() {
+        KeystoreCrypto.setKeyProviderForTesting(JvmTestKeyProvider())
         fakeBarsDao = FakeBarsDao()
         fakeAbsenceDao = FakeAbsenceDao()
         sessionStorage = SessionStorage(FakeSharedPreferences())
         barsWebClient = BarsWebClient(sessionStorage)
+    }
+
+    @After
+    fun tearDown() {
+        KeystoreCrypto.setKeyProviderForTesting(null)
     }
 
     @Test

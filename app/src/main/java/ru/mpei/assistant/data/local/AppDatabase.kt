@@ -6,11 +6,15 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 import ru.mpei.assistant.data.model.absence.SubjectAbsence
 import ru.mpei.assistant.data.model.bars.BarsSubject
 import ru.mpei.assistant.data.model.email.EmailMessage
 import ru.mpei.assistant.data.model.schedule.Lesson
 import ru.mpei.assistant.data.model.schedule.LessonNote
+import ru.mpei.assistant.util.AppLogger
+import java.io.File
+import java.io.FileInputStream
 
 @Database(
     entities = [BarsSubject::class, Lesson::class, SubjectAbsence::class, EmailMessage::class, LessonNote::class],
@@ -24,6 +28,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun emailDao(): EmailDao
 
     companion object {
+        private const val TAG = "AppDatabase"
+        const val DATABASE_NAME = "mpei_assistant.db"
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -108,13 +115,84 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal fun isPlaintextDatabase(file: File): Boolean {
+            if (!file.exists() || file.length() < 16) return false
+            return try {
+                FileInputStream(file).use { input ->
+                    val header = ByteArray(16)
+                    val read = input.read(header)
+                    read == 16 && String(header, Charsets.US_ASCII).startsWith("SQLite format 3")
+                }
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Failed to check SQLite header", e)
+                false
+            }
+        }
+
+        private fun migratePlaintextToSqlcipher(plaintextDbFile: File, passphrase: ByteArray) {
+            AppLogger.i(TAG, "Plaintext database detected. Migrating to SQLCipher AES-256 encryption...")
+            try {
+                System.loadLibrary("sqlcipher")
+                val tempEncryptedFile = File(plaintextDbFile.parentFile, "${plaintextDbFile.name}_encrypted_temp")
+                if (tempEncryptedFile.exists()) {
+                    tempEncryptedFile.delete()
+                }
+
+                val db = net.zetetic.database.sqlcipher.SQLiteDatabase.openOrCreateDatabase(
+                    plaintextDbFile,
+                    null
+                )
+
+                val passphraseHex = SessionStorage.bytesToHex(passphrase)
+                db.execSQL("ATTACH DATABASE '${tempEncryptedFile.absolutePath.replace("'", "''")}' AS encrypted KEY \"x'$passphraseHex'\";")
+                db.execSQL("SELECT sqlcipher_export('encrypted');")
+                db.execSQL("DETACH DATABASE encrypted;")
+                db.close()
+
+                val walFile = File(plaintextDbFile.path + "-wal")
+                if (walFile.exists()) walFile.delete()
+                val shmFile = File(plaintextDbFile.path + "-shm")
+                if (shmFile.exists()) shmFile.delete()
+
+                if (plaintextDbFile.delete()) {
+                    if (tempEncryptedFile.renameTo(plaintextDbFile)) {
+                        AppLogger.i(TAG, "Plaintext database successfully migrated to SQLCipher encrypted format")
+                    } else {
+                        AppLogger.e(TAG, "Failed to rename temp encrypted DB to original DB name")
+                    }
+                } else {
+                    AppLogger.e(TAG, "Failed to delete old plaintext DB file")
+                }
+            } catch (e: Throwable) {
+                AppLogger.e(TAG, "Failed to migrate plaintext database to SQLCipher; fallback to fresh recreation", e)
+                try {
+                    plaintextDbFile.delete()
+                    File(plaintextDbFile.path + "-wal").delete()
+                    File(plaintextDbFile.path + "-shm").delete()
+                } catch (_: Exception) {}
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
+                val appContext = context.applicationContext
+                val dbFile = appContext.getDatabasePath(DATABASE_NAME)
+                val sessionStorage = SessionStorage(appContext)
+                val passphrase = sessionStorage.getOrCreateDatabasePassphrase()
+
+                if (dbFile.exists() && isPlaintextDatabase(dbFile)) {
+                    migratePlaintextToSqlcipher(dbFile, passphrase)
+                }
+
+                System.loadLibrary("sqlcipher")
+                val factory = SupportOpenHelperFactory(passphrase)
+
                 val instance = Room.databaseBuilder(
-                    context.applicationContext,
+                    appContext,
                     AppDatabase::class.java,
-                    "mpei_assistant.db"
+                    DATABASE_NAME
                 )
+                    .openHelperFactory(factory)
                     .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()

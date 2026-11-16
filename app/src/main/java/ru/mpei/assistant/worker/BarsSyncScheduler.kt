@@ -10,15 +10,14 @@ import java.util.concurrent.TimeUnit
 
 object BarsSyncScheduler {
     const val WORK_NAME = "bars_sync_work"
-    const val DEFAULT_INTERVAL_MINUTES = 60L // 1 час (по умолчанию)
+    const val DEFAULT_INTERVAL_MINUTES = 120L // 2 часа (по умолчанию)
 
     val AVAILABLE_INTERVALS = listOf(
-        15L,   // 15 минут (минимум Android)
-        30L,   // 30 минут
-        60L,   // 1 час (по умолчанию)
-        120L,  // 2 часа
-        180L,  // 3 часа
-        360L,  // 6 часов
+        30L,   // 30 минут (Повышенная нагрузка)
+        60L,   // 1 час
+        120L,  // 2 часа (по умолчанию)
+        180L,  // 3 часа (Рекомендуемый)
+        360L,  // 6 часов (Энергосберегающий)
         720L   // 12 часов
     )
 
@@ -30,8 +29,13 @@ object BarsSyncScheduler {
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
+        // Рандомизация начального смещения (Jitter 5..15 минут) во избежание эффекта thundering herd
+        val jitterMinutes = (5L..15L).random()
+
         val syncRequest = PeriodicWorkRequestBuilder<BarsCheckWorker>(validInterval, TimeUnit.MINUTES)
             .setConstraints(constraints)
+            .setInitialDelay(jitterMinutes, TimeUnit.MINUTES)
+            .setBackoffCriteria(androidx.work.BackoffPolicy.EXPONENTIAL, 15, TimeUnit.MINUTES)
             .build()
 
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
@@ -47,8 +51,8 @@ object BarsSyncScheduler {
         return when (minutes) {
             15L -> "15 минут (Высокий риск блокировки)"
             30L -> "30 минут (Повышенная нагрузка)"
-            60L -> "1 час (По умолчанию)"
-            120L -> "2 часа"
+            60L -> "1 час"
+            120L -> "2 часа (По умолчанию)"
             180L -> "3 часа (Рекомендуемый)"
             360L -> "6 часов (Энергосберегающий)"
             720L -> "12 часов"

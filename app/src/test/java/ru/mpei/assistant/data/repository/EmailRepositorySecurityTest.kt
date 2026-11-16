@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -18,6 +19,7 @@ import ru.mpei.assistant.data.local.SessionStorage
 import ru.mpei.assistant.data.model.email.EmailMessage
 import ru.mpei.assistant.data.network.OsepMailClient
 import ru.mpei.assistant.security.KeystoreCrypto
+import ru.mpei.assistant.test.JvmTestKeyProvider
 import java.io.File
 
 class EmailRepositorySecurityTest {
@@ -86,10 +88,16 @@ class EmailRepositorySecurityTest {
 
     @Before
     fun setup() {
+        KeystoreCrypto.setKeyProviderForTesting(JvmTestKeyProvider())
         fakeEmailDao = FakeEmailDao()
         sessionStorage = SessionStorage(FakeSharedPreferences())
         mailClient = OsepMailClient()
         testCacheDir = tempFolder.newFolder("cache")
+    }
+
+    @After
+    fun tearDown() {
+        KeystoreCrypto.setKeyProviderForTesting(null)
     }
 
     @Test

@@ -14,8 +14,8 @@ class MpeiApp : Application() {
         // Create notification channels
         NotificationHelper.createChannels(this)
 
-        // Schedule periodic background check for BARS (grades & absences: 30 minutes)
-        BarsSyncScheduler.schedule(this, 30L)
+        // Schedule periodic background check for BARS (grades & absences: 2 hours)
+        BarsSyncScheduler.schedule(this, 120L)
 
         // Start background check for OSEP email (10 minutes)
         EmailCheckWorker.start(this)

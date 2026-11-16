@@ -36,8 +36,12 @@ object BarsHtmlParser {
                     KmTableResult(emptyList(), null, null, null, null, null)
                 }
 
+                val stableSem = semesterName.trim()
+                val controlSuffix = if (parsedHeader.controlType.isNotBlank()) "_${parsedHeader.controlType.trim()}" else ""
+                val subjectId = "${parsedHeader.name.trim()}${controlSuffix}_$stableSem"
+
                 val subject = BarsSubject(
-                    id = "${parsedHeader.name}_${index}_${semesterName}",
+                    id = subjectId,
                     name = parsedHeader.name,
                     teacher = parsedHeader.teacher,
                     controlType = parsedHeader.controlType,

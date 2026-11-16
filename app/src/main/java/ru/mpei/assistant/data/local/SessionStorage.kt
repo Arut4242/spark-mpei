@@ -107,6 +107,30 @@ open class SessionStorage internal constructor(
         get() = sharedPreferences.getLong(KEY_LAST_UPDATE_CHECK_TIME, 0L)
         set(value) = sharedPreferences.edit().putLong(KEY_LAST_UPDATE_CHECK_TIME, value).apply()
 
+    var lastAppOpenTime: Long
+        get() = sharedPreferences.getLong(KEY_LAST_APP_OPEN_TIME, 0L)
+        set(value) = sharedPreferences.edit().putLong(KEY_LAST_APP_OPEN_TIME, value).apply()
+
+    var lastBarsSyncTime: Long
+        get() = sharedPreferences.getLong(KEY_LAST_BARS_SYNC_TIME, 0L)
+        set(value) = sharedPreferences.edit().putLong(KEY_LAST_BARS_SYNC_TIME, value).apply()
+
+    var lastBarsErrorTime: Long
+        get() = sharedPreferences.getLong(KEY_LAST_BARS_ERROR_TIME, 0L)
+        set(value) = sharedPreferences.edit().putLong(KEY_LAST_BARS_ERROR_TIME, value).apply()
+
+    var lastEmailSyncTime: Long
+        get() = sharedPreferences.getLong(KEY_LAST_EMAIL_SYNC_TIME, 0L)
+        set(value) = sharedPreferences.edit().putLong(KEY_LAST_EMAIL_SYNC_TIME, value).apply()
+
+    var lastEmailNewestUid: Long
+        get() = sharedPreferences.getLong(KEY_LAST_EMAIL_NEWEST_UID, 0L)
+        set(value) = sharedPreferences.edit().putLong(KEY_LAST_EMAIL_NEWEST_UID, value).apply()
+
+    var lastEmailUnreadCount: Int
+        get() = sharedPreferences.getInt(KEY_LAST_EMAIL_UNREAD_COUNT, 0)
+        set(value) = sharedPreferences.edit().putInt(KEY_LAST_EMAIL_UNREAD_COUNT, value).apply()
+
     private val jsonHelper = Json { ignoreUnknownKeys = true }
 
     private val _favoriteSchedulesFlow = MutableStateFlow<List<SearchEntity>>(loadFavoriteSchedules())
@@ -206,6 +230,22 @@ open class SessionStorage internal constructor(
             .apply()
     }
 
+    /**
+     * Возвращает или безопасно генерирует криптографический ключ для шифрования SQLite базы данных (SQLCipher).
+     * Сам 32-байтный ключ хранится в защищённом аппаратном хранилище EncryptedSharedPreferences (Android Keystore AES-256).
+     */
+    fun getOrCreateDatabasePassphrase(): ByteArray {
+        val existingHex = sharedPreferences.getString(KEY_DATABASE_PASSPHRASE, null)
+        if (!existingHex.isNullOrBlank()) {
+            return hexToBytes(existingHex)
+        }
+        val randomBytes = ByteArray(32)
+        java.security.SecureRandom().nextBytes(randomBytes)
+        val hex = bytesToHex(randomBytes)
+        sharedPreferences.edit().putString(KEY_DATABASE_PASSPHRASE, hex).commit()
+        return randomBytes
+    }
+
     companion object {
         private const val PREFS_FILENAME = "bars_secure_prefs"
         private const val LEGACY_FALLBACK_FILENAME = "bars_secure_prefs_fallback"
@@ -253,6 +293,7 @@ open class SessionStorage internal constructor(
             )
         }
 
+        private const val KEY_DATABASE_PASSPHRASE = "key_database_passphrase"
         private const val KEY_BARS_COOKIES = "key_bars_cookies"
         private const val KEY_BARS_STUDENT_URL = "key_bars_student_url"
         private const val KEY_BARS_STUDENT_ID = "key_bars_student_id"
@@ -274,10 +315,28 @@ open class SessionStorage internal constructor(
         private const val KEY_PRIVACY_POLICY_ACCEPTED = "key_privacy_policy_accepted"
         private const val KEY_GITHUB_REPO = "key_github_repo"
         private const val KEY_LAST_UPDATE_CHECK_TIME = "key_last_update_check_time"
+        private const val KEY_LAST_APP_OPEN_TIME = "key_last_app_open_time"
+        private const val KEY_LAST_BARS_SYNC_TIME = "key_last_bars_sync_time"
+        private const val KEY_LAST_BARS_ERROR_TIME = "key_last_bars_error_time"
+        private const val KEY_LAST_EMAIL_SYNC_TIME = "key_last_email_sync_time"
+        private const val KEY_LAST_EMAIL_NEWEST_UID = "key_last_email_newest_uid"
+        private const val KEY_LAST_EMAIL_UNREAD_COUNT = "key_last_email_unread_count"
         private const val KEY_APP_THEME_MODE = "key_app_theme_mode"
         const val THEME_SYSTEM = "SYSTEM"
         const val THEME_LIGHT = "LIGHT"
         const val THEME_DARK = "DARK"
         const val DEFAULT_GITHUB_REPO = "Arut4242/spark-mpei"
+
+        fun bytesToHex(bytes: ByteArray): String =
+            bytes.joinToString("") { "%02x".format(it) }
+
+        fun hexToBytes(hex: String): ByteArray {
+            val result = ByteArray(hex.length / 2)
+            for (i in result.indices) {
+                val index = i * 2
+                result[i] = hex.substring(index, index + 2).toInt(16).toByte()
+            }
+            return result
+        }
     }
 }

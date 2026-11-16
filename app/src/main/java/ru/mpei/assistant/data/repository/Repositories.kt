@@ -45,7 +45,7 @@ class BarsRepository(
      */
     private fun encryptSubject(subject: BarsSubject): BarsSubject {
         val encMeasures = if (subject.controlMeasuresJson.isNotEmpty() && subject.controlMeasuresJson != "[]") {
-            KeystoreCrypto.encrypt(subject.controlMeasuresJson) ?: subject.controlMeasuresJson
+            KeystoreCrypto.encrypt(subject.controlMeasuresJson) ?: ""
         } else subject.controlMeasuresJson
         return subject.copy(controlMeasuresJson = encMeasures)
     }
@@ -54,12 +54,12 @@ class BarsRepository(
      * Расшифровывает контрольные точки при чтении из Room
      */
     private fun decryptSubject(subject: BarsSubject): BarsSubject {
-        val decMeasures = KeystoreCrypto.decrypt(subject.controlMeasuresJson) ?: subject.controlMeasuresJson
+        val decMeasures = KeystoreCrypto.decrypt(subject.controlMeasuresJson) ?: "[]"
         return subject.copy(controlMeasuresJson = decMeasures)
     }
 
     fun getSubjectsFlow(): Flow<List<BarsSubject>> = barsDao.getAllSubjects().map { list ->
-        list.map { decryptSubject(it) }
+        list.distinctBy { it.id }.map { decryptSubject(it) }
     }
 
     suspend fun refreshGrades(semesterId: String? = null): Result<List<BarsSubject>> {
@@ -78,8 +78,7 @@ class BarsRepository(
         ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "parseSubjects finished: found ${subjects.size} subjects ($semName)")
 
         if (subjects.isNotEmpty()) {
-            barsDao.clearAll()
-            barsDao.insertAll(subjects.map { encryptSubject(it) })
+            barsDao.replaceAll(subjects.map { encryptSubject(it) })
             ru.mpei.assistant.util.AppLogger.i("BARS_REPO", "Saved ${subjects.size} encrypted subjects to database")
         } else {
             ru.mpei.assistant.util.AppLogger.w("BARS_REPO", "Parsed 0 subjects from HTML")

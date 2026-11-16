@@ -9,13 +9,13 @@ import ru.mpei.assistant.data.local.SessionStorage
 class BarsSyncSchedulerTest {
 
     @Test
-    fun testDefaultIntervalIsSixtyMinutesForBars() {
-        assertEquals(60L, BarsSyncScheduler.DEFAULT_INTERVAL_MINUTES)
+    fun testDefaultIntervalIs120MinutesForBars() {
+        assertEquals(120L, BarsSyncScheduler.DEFAULT_INTERVAL_MINUTES)
     }
 
     @Test
-    fun testEmailCheckWorkerIntervalIsThirtyMinutes() {
-        assertEquals(30L, EmailCheckWorker.INTERVAL_MINUTES)
+    fun testEmailCheckWorkerIntervalIs60Minutes() {
+        assertEquals(60L, EmailCheckWorker.INTERVAL_MINUTES)
     }
 
     @Test
@@ -47,7 +47,7 @@ class BarsSyncSchedulerTest {
     @Test
     fun testIntervalLabels() {
         assertTrue(BarsSyncScheduler.getIntervalLabel(15L).contains("Высокий риск"))
-        assertTrue(BarsSyncScheduler.getIntervalLabel(60L).contains("По умолчанию"))
+        assertTrue(BarsSyncScheduler.getIntervalLabel(120L).contains("По умолчанию"))
         assertTrue(BarsSyncScheduler.getShortLabel(30L).contains("30 минут"))
     }
 }

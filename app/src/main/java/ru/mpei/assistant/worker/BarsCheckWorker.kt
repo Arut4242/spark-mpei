@@ -24,14 +24,58 @@ class BarsCheckWorker(
     override suspend fun doWork(): Result {
         val storage = SessionStorage(context)
         val db = AppDatabase.getInstance(context)
+        val now = System.currentTimeMillis()
 
-        // Silently update schedule in background for selected group
+        // 1. Ограничение по учебному времени и ночной режим
+        // Обновление разрешено только с 05:00 до 09:30 утра и с 15:00 дня до 03:00 ночи
+        val cal = java.util.Calendar.getInstance()
+        val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
+        val minute = cal.get(java.util.Calendar.MINUTE)
+        val totalMinutes = hour * 60 + minute
+        val isAllowedTimeWindow = (totalMinutes in 300..570) || (totalMinutes >= 900 || totalMinutes < 180)
+        if (!isAllowedTimeWindow) {
+            ru.mpei.assistant.util.AppLogger.i(
+                "BARS_CHECK_WORKER",
+                "Фоновое обновление БАРС пропущено: вне разрешённого интервала (05:00-09:30, 15:00-03:00). Текущее время: %02d:%02d".format(hour, minute)
+            )
+            return Result.success()
+        }
+
+        // 2. Приостановка при неактивности пользователя (> 7 дней -> не чаще 1 раза в сутки)
+        val lastAppOpen = storage.lastAppOpenTime
+        val isInactiveUser = lastAppOpen > 0L && (now - lastAppOpen > 7L * 24 * 60 * 60 * 1000L)
+        if (isInactiveUser) {
+            val lastSync = storage.lastBarsSyncTime
+            if (now - lastSync < 24L * 60 * 60 * 1000L) {
+                ru.mpei.assistant.util.AppLogger.i(
+                    "BARS_CHECK_WORKER",
+                    "Пользователь не открывал приложение >7 дней. Пропуск фоновой проверки (лимит 1 раз в сутки для неактивных)."
+                )
+                return Result.success()
+            }
+        }
+
+        // 3. Пауза при недавних ошибках сервера БАРС (экспоненциальная защита сервера)
+        val lastError = storage.lastBarsErrorTime
+        if (now - lastError < 15L * 60 * 1000L) {
+            ru.mpei.assistant.util.AppLogger.w(
+                "BARS_CHECK_WORKER",
+                "Сервер БАРС недавно возвращал ошибку. Пауза перед повторным запросом во избежание перегрузки."
+            )
+            return Result.success()
+        }
+
+        // 4. Оптимизация расписания: проверка не чаще 1 раза в сутки и без принудительного сброса кэша
         val selectedGroupId = storage.selectedGroupId
         if (selectedGroupId != -1L) {
             try {
                 val scheduleApi = MpeiScheduleApi.create()
                 val scheduleRepo = ScheduleRepository(scheduleApi, db.scheduleDao(), storage)
-                scheduleRepo.refreshSchedule(selectedGroupId, force = true)
+                val hasCache = scheduleRepo.hasCachedLessons(selectedGroupId)
+                val lastScheduleSync = storage.lastScheduleSyncTime
+                if (!hasCache || (now - lastScheduleSync > 24L * 60 * 60 * 1000L)) {
+                    scheduleRepo.refreshSchedule(selectedGroupId, force = false)
+                }
             } catch (_: Exception) {}
         }
 
@@ -47,11 +91,12 @@ class BarsCheckWorker(
         var anyFailure = false
         var isAuthError = false
 
-        // 1. Проверка новых оценок
+        // 5. Проверка новых оценок
         if (checkGrades) {
             val htmlResult = client.fetchGradesHtml()
             if (htmlResult.isFailure) {
                 anyFailure = true
+                storage.lastBarsErrorTime = now
                 val ex = htmlResult.exceptionOrNull()
                 if (ex is IllegalStateException && ex.message?.contains("сессия", ignoreCase = true) == true) {
                     isAuthError = true
@@ -59,7 +104,9 @@ class BarsCheckWorker(
             } else {
                 anySuccess = true
                 val html = htmlResult.getOrThrow()
-                val newSubjects = BarsHtmlParser.parseSubjects(html, "Текущий семестр")
+                val semId = ru.mpei.assistant.data.parser.BarsAttendanceParser.estimateCurrentSemesterId()
+                val semName = ru.mpei.assistant.data.parser.BarsAttendanceParser.formatSemesterName(semId)
+                val newSubjects = BarsHtmlParser.parseSubjects(html, semName)
 
                 // Читаем предыдущие оценки из БД
                 val oldSubjects = db.barsDao().getAllSubjectsList()
@@ -103,12 +150,13 @@ class BarsCheckWorker(
                 if (newSubjects.isNotEmpty()) {
                     val encryptedSubjects = newSubjects.map {
                         val encMeasures = if (it.controlMeasuresJson.isNotEmpty() && it.controlMeasuresJson != "[]") {
-                            KeystoreCrypto.encrypt(it.controlMeasuresJson) ?: it.controlMeasuresJson
+                            KeystoreCrypto.encrypt(it.controlMeasuresJson) ?: ""
                         } else it.controlMeasuresJson
                         it.copy(controlMeasuresJson = encMeasures)
                     }
-                    db.barsDao().insertAll(encryptedSubjects)
+                    db.barsDao().replaceAll(encryptedSubjects)
                 }
+                storage.lastBarsSyncTime = now
             }
         }
 
@@ -127,9 +175,11 @@ class BarsCheckWorker(
                     anySuccess = true
                 } else {
                     anyFailure = true
+                    storage.lastBarsErrorTime = now
                 }
             } catch (e: Exception) {
                 anyFailure = true
+                storage.lastBarsErrorTime = now
             }
         }
 
