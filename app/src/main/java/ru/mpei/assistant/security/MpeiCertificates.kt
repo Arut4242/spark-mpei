@@ -130,18 +130,36 @@ a+s=
                 // 1. Криптографическая валидация всей цепочки сертификатов
                 delegate.checkServerTrusted(chain, authType)
 
-                // 2. Проверка хоста (mail.mpei.ru) в SAN или CN конечного сертификата
+                // 2. Строгая проверка соответствия хоста (mail.mpei.ru) в SAN или CN конечного сертификата (RFC 6125)
                 val leaf = chain[0]
                 val sans = try {
                     leaf.subjectAlternativeNames?.mapNotNull { it.getOrNull(1)?.toString() } ?: emptyList()
                 } catch (_: Exception) {
                     emptyList()
                 }
-                val matchesHost = sans.any { it.equals(imapHost, ignoreCase = true) } ||
-                        leaf.subjectX500Principal.name.contains(imapHost, ignoreCase = true)
+
+                val cn = Regex("""(?:^|,)\s*CN=([^,]+)""", RegexOption.IGNORE_CASE)
+                    .find(leaf.subjectX500Principal.name)
+                    ?.groupValues?.getOrNull(1)?.trim()
+
+                fun matchPattern(pattern: String?, target: String): Boolean {
+                    if (pattern == null) return false
+                    if (pattern.equals(target, ignoreCase = true)) return true
+                    if (pattern.startsWith("*.")) {
+                        val suffix = pattern.removePrefix("*.")
+                        val targetParts = target.split(".")
+                        if (targetParts.size >= 2) {
+                            val targetSuffix = targetParts.drop(1).joinToString(".")
+                            return targetSuffix.equals(suffix, ignoreCase = true)
+                        }
+                    }
+                    return false
+                }
+
+                val matchesHost = sans.any { matchPattern(it, imapHost) } || matchPattern(cn, imapHost)
 
                 if (!matchesHost) {
-                    throw CertificateException("Сертификат сервера ($leaf) не содержит имя хоста '$imapHost' в SAN или CN")
+                    throw CertificateException("Сертификат сервера (${leaf.subjectX500Principal.name}) не соответствует имени хоста '$imapHost' ни в SAN, ни в CN")
                 }
             }
 

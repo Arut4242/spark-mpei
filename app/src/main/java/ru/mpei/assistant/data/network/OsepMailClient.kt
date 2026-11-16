@@ -52,35 +52,26 @@ class OsepMailClient {
     private val imapHost = "mail.mpei.ru"
     private val imapPort = 993
 
-    /**
-     * Валидатор сертификатов для mail.mpei.ru на основе официальных доверенных сертификатов НИУ «МЭИ»
-     * (Корневой CA: CN=MPEI (TU) и Промежуточный CA: CN=public-PUBLICCA-CA).
-     */
-    private val mpeiTrustManager by lazy {
-        ru.mpei.assistant.security.MpeiCertificates.createMpeiTrustManager(imapHost)
-    }
-
-    private fun createSession(): Session {
+    internal fun createSession(host: String = imapHost): Session {
         val sslContext = try {
-            ru.mpei.assistant.security.MpeiCertificates.createMpeiSslContext(imapHost)
+            ru.mpei.assistant.security.MpeiCertificates.createMpeiSslContext(host)
         } catch (e: Exception) {
-            ru.mpei.assistant.util.AppLogger.e("OSEP_MAIL", "Failed to create MPEI SSL Context", e)
-            null
+            ru.mpei.assistant.util.AppLogger.e("OSEP_MAIL", "Critical TLS error: Failed to create MPEI SSL Context for $host", e)
+            throw SecurityException("Не удалось создать доверенный SSLContext для почтового сервера $host. Соединение отклонено в целях безопасности.", e)
         }
 
         val props = Properties().apply {
             put("mail.store.protocol", "imaps")
-            put("mail.imaps.host", imapHost)
+            put("mail.imaps.host", host)
             put("mail.imaps.port", "$imapPort")
             put("mail.imaps.ssl.enable", "true")
             put("mail.imaps.timeout", "30000")
             put("mail.imaps.connectiontimeout", "30000")
-            put("mail.imaps.ssl.trust", imapHost)
+            // Внимание: свойство mail.imaps.ssl.trust строго исключено, так как его использование отключает
+            // полноценную валидацию цепочки сертификатов удостоверяющего центра в JavaMail.
             put("mail.imaps.ssl.checkserveridentity", "true")
-            if (sslContext != null) {
-                put("mail.imaps.ssl.socketFactory", sslContext.socketFactory)
-                put("mail.imaps.ssl.socketFactory.fallback", "false")
-            }
+            put("mail.imaps.ssl.socketFactory", sslContext.socketFactory)
+            put("mail.imaps.ssl.socketFactory.fallback", "false")
             put("mail.mime.decodefilename", "true")
             put("mail.mime.decodeparameters", "true")
             put("mail.mime.multipart.allowempty", "true")
